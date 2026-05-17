@@ -50,15 +50,22 @@ function params = simulation_params()
     params.range_max_m = params.range_max_km * 1000;
 
     % ==================== 4. 目标航迹 ====================
-    % 航迹需在双方雷达探测范围内
-    % 从R1(112,33.5): 正东~126-130°E, 32-34°N → azimuth ~85-95°
-    % 从R2(114,31.5): 正东~126-130°E, 32-34°N → azimuth ~82-97°
-    % 航迹: 东海自南向北飞行
-    params.aircraft_waypoints = [ ...
-        127.5, 31.0, 0.0; ...   % 起点: 东海南部
-        130.5, 33.0, 0.0 ...    % 终点: 济州岛东南
-    ];
-    params.aircraft_speed_ms = 230.0;              % 巡航速度 ~828 km/h
+    % 多目标仿真: 3架民航机在东海重叠威力区内巡航
+    % 航路设计确保各机在R1和R2探测范围（~125-133°E, 31-34°N）内飞行
+
+    params.num_aircraft = 3;
+
+    % 飞机A: 东侧航线, 南→北, 类似上海→济州方向
+    params.aircraft_A_waypoints = [127.5, 31.0, 0.0; 130.5, 33.5, 0.0];
+    params.aircraft_A_speed_ms = 230.0;
+
+    % 飞机B: 西侧航线, 南→北, 温州→首尔方向, 稍快
+    params.aircraft_B_waypoints = [126.0, 31.0, 0.0; 129.0, 33.5, 0.0];
+    params.aircraft_B_speed_ms = 250.0;
+
+    % 飞机C: 横穿航线, 西→东, 跨越A/B航线, 稍慢
+    params.aircraft_C_waypoints = [125.5, 32.5, 0.0; 131.5, 32.0, 0.0];
+    params.aircraft_C_speed_ms = 220.0;
     params.trajectory_mode = "straight";            % 大圆直飞
 
     % ==================== 5. 量测噪声 ====================
@@ -87,8 +94,8 @@ function params = simulation_params()
 
     % ==================== 8. 航迹管理参数 ====================
     params.tracker_M = 3;                          % M/N起始: N帧中至少M帧
-    params.tracker_N = 5;
-    params.tracker_K_loss = 4;                     % 连续K帧无关联→终止
+    params.tracker_N = 7;
+    params.tracker_K_loss = 10;                    % 连续K帧无关联→终止（Pd=60%下0.4^10≈0）
     params.gate_sigma = 3.0;                       % 关联波门: 3σ椭圆门
 
     % ==================== 9. 检测概率 & 虚警率 ====================
@@ -101,6 +108,17 @@ function params = simulation_params()
         ((params.range_max_km - params.range_min_km) / params.range_resolution_km) * ...
         (params.beam_width_deg / params.azimuth_resolution_deg);
 
-    % ==================== 10. 随机种子 ====================
+    % ==================== 10. PDA栅格加权参数 ====================
+    params.use_pda_weighting = true;               % 启用PDA概率数据关联（替代NN最近邻）
+    params.pda_pd_gate = 0.9889;                   % 2D χ² gate概率 (gate_sigma=3→P=0.9889)
+    params.pda_clutter_intensity = 1.5 / (2000e3 * 15);  % 杂波空间密度（每m·deg）
+
+    % ==================== 11. 模糊自适应参数 ====================
+    params.use_fuzzy_adaptive = true;              % 启用模糊自适应Q调节
+    params.fuzzy_window_size = 5;                  % NIS滑动平均窗口（帧）
+    params.fuzzy_Q_min_factor = 0.3;               % Q缩放因子下限
+    params.fuzzy_Q_max_factor = 5.0;               % Q缩放因子上限
+
+    % ==================== 12. 随机种子 ====================
     params.random_seed = 42;
 end

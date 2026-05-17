@@ -235,6 +235,8 @@ function ukf = ukf_filter(params, radar_lon, radar_lat, tx_lon, tx_lat, dt)
     % =====================================================================
     Q_base = diag([1e-9, 1e-13, 1e-9, 1e-13]);
     ukf.Q = Q_base * params.ukf_Q_scale;
+    ukf.Q_base = ukf.Q;  % 保存基准Q供模糊自适应调节参考
+    ukf.Q_ema = 1.0;      % 模糊自适应EMA状态初始化
 
     % =====================================================================
     % 第6部分：构建初始状态协方差矩阵 P (4×4)

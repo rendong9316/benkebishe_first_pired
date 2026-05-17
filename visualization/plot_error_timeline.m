@@ -5,7 +5,7 @@
 
 function plot_error_timeline(trackState_R1, trackState_R2, detList_R1, detList_R2, ...
         true_track, t1_grid, t2_grid, params, out_dir)
-    figure('Position', [100, 100, 1200, 800]);
+    figure('Position', [50, 50, 1400, 750]);
 
     n_frames = length(trackState_R1);
     err_R1 = nan(n_frames, 1);

@@ -4,7 +4,7 @@
 % =========================================================================
 
 function plot_tracks_vs_truth(trackState_R1, trackState_R2, true_track, params, out_dir)
-    figure('Position', [100, 100, 1400, 600]);
+    figure('Position', [50, 50, 1400, 750]);
 
     % ---- R1 ----
     subplot(1, 2, 1);

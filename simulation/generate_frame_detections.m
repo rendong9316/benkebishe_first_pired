@@ -5,7 +5,9 @@
 
 function [detList, has_target_det] = generate_frame_detections(rx_lon, rx_lat, ...
         tx_lon, tx_lat, tgt_lon, tgt_lat, tgt_lon_rate, tgt_lat_rate, ...
-        frameID, time_sec, range_bias, az_bias, beam_center, params)
+        frameID, time_sec, range_bias, az_bias, beam_center, params, add_clutter)
+
+    if nargin < 15, add_clutter = true; end
 
     detList = [];
     has_target_det = false;
@@ -43,7 +45,8 @@ function [detList, has_target_det] = generate_frame_detections(rx_lon, rx_lat, .
     end
 
     % ---- 虚警杂波生成（在(r1, az)空间均匀采样，保证威力范围内地理分布可控）----
-    n_false = poissrnd(params.n_resolution_cells * params.false_alarm_rate);
+    if add_clutter
+        n_false = poissrnd(params.n_resolution_cells * params.false_alarm_rate);
     half_beam = params.beam_width_deg / 2;
     for f = 1:n_false
         % 在接收站极坐标(r1, az)中均匀采样
@@ -72,5 +75,6 @@ function [detList, has_target_det] = generate_frame_detections(rx_lon, rx_lat, .
             'lat', clut_lat, 'lon', clut_lon, ...
             'is_clutter', true);
         detList = [detList, det];
+        end
     end
 end

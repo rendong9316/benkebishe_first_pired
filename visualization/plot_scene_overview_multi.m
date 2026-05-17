@@ -1,9 +1,10 @@
 % =========================================================================
-% plot_scene_overview.m
-% 图1: 场景总览 — geoplot 交互显示站点、波束、威力范围、航迹
+% plot_scene_overview_multi.m
+% 多目标场景总览 — 显示站点、波束扇区、多飞机真实航迹
 % =========================================================================
 
-function plot_scene_overview(true_track, params, out_dir)
+function plot_scene_overview_multi(true_tracks, labels, params, out_dir)
+    colors = {'g', 'm', 'c'};  % A=绿, B=洋红, C=青
     figure('Position', [50, 50, 1400, 750]);
     geoaxes('Basemap', 'landcover');
     hold on;
@@ -20,26 +21,29 @@ function plot_scene_overview(true_track, params, out_dir)
     geoplot(params.radar2_tx_lat, params.radar2_tx_lon, 'r^', ...
         'MarkerSize', 10, 'MarkerFaceColor', 'r', 'DisplayName', 'Tx2');
 
-    % R1 波束扇形
+    % 波束扇区
     draw_beam_sector(params.radar1_lat, params.radar1_lon, ...
         params.radar1_beam_center_deg, params.beam_width_deg, ...
         params.range_min_m, params.range_max_m, [0 0 1]);
-
-    % R2 波束扇形
     draw_beam_sector(params.radar2_lat, params.radar2_lon, ...
         params.radar2_beam_center_deg, params.beam_width_deg, ...
         params.range_min_m, params.range_max_m, [1 0 0]);
 
-    % 真实航迹
-    geoplot(true_track(:,2), true_track(:,1), 'k-', 'LineWidth', 2, ...
-        'DisplayName', '目标真实航迹');
+    % 各飞机真实航迹
+    for a = 1:length(true_tracks)
+        tt = true_tracks{a};
+        col = colors{a};
+        geoplot(tt(:,2), tt(:,1), '-', 'Color', col, 'LineWidth', 2, ...
+            'DisplayName', sprintf('飞机%s 真值', labels{a}));
+        geoplot(tt(1,2), tt(1,1), 'o', 'Color', col, ...
+            'MarkerSize', 8, 'MarkerFaceColor', col, ...
+            'DisplayName', sprintf('飞机%s 起点', labels{a}));
+        geoplot(tt(end,2), tt(end,1), 'x', 'Color', col, ...
+            'MarkerSize', 10, 'LineWidth', 2, ...
+            'DisplayName', sprintf('飞机%s 终点', labels{a}));
+    end
 
-    geoplot(true_track(1,2), true_track(1,1), 'ko', 'MarkerSize', 8, ...
-        'MarkerFaceColor', 'g');
-    geoplot(true_track(end,2), true_track(end,1), 'kx', 'MarkerSize', 10, ...
-        'LineWidth', 2);
-
-    title('双基地外辐射源雷达仿真场景');
+    title(sprintf('多目标双基地雷达仿真场景 (%d架飞机)', length(true_tracks)));
     subtitle(sprintf('Pd=%.0f%%, Pfa=%.3f, dt=%.0fs, 波束15°, %d-%d km', ...
         params.detection_probability*100, params.false_alarm_rate, ...
         params.dt_sec, params.range_min_km, params.range_max_km));

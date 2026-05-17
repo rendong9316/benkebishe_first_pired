@@ -4,7 +4,7 @@
 % =========================================================================
 
 function plot_point_cloud_3d(detList, title_str, out_path)
-    figure('Position', [100, 100, 900, 700]);
+    figure('Position', [50, 50, 1400, 750]);
     hold on;
 
     range_tgt = []; az_tgt = []; frame_tgt = [];
