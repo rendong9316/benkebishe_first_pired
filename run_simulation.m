@@ -57,24 +57,28 @@ t2_grid = params.time_offset_radar2_sec : params.dt_sec : trajs{1}.duration_sec;
 n_frames = min(length(t1_grid), length(t2_grid));
 fprintf('仿真帧数: %d (dt=%.0fs)\n', n_frames, params.dt_sec);
 
-%% ==================== Phase 1: 系统偏差离线标定 ====================
-fprintf('\n========== Phase 1: 系统偏差标定 ==========\n');
+%% ==================== Phase 1: 系统偏差离线标定 (ADS-B合作目标) ====================
+fprintf('\n========== Phase 1: 系统偏差标定 (ADS-B合作目标) ==========\n');
 
 rng(params.random_seed);  % 标定使用独立随机流
 
-% 使用飞机A的真值航迹进行标定
-true_track_A = true_tracks{1};
-
-n_cal = min(30, size(true_track_A, 1));
-cal_step = max(1, floor(size(true_track_A, 1) / n_cal));
-cal_idxs = 1:cal_step:size(true_track_A, 1);
-cal_idxs = cal_idxs(1:min(n_cal, length(cal_idxs)));
+% 加载ADS-B数据作为合作目标
+fprintf('加载ADS-B合作目标: %s\n', params.adsb_csv_path);
+T_adsb = readtable(params.adsb_csv_path, 'ReadVariableNames', false);
+adsb_icao = T_adsb.Var1;
+adsb_lat  = T_adsb.Var2;
+adsb_lon  = T_adsb.Var3;
 
 dr1_list = []; da1_list = [];
 dr2_list = []; da2_list = [];
 
+n_check = min(5000, height(T_adsb));
+cal_step = max(1, floor(height(T_adsb) / n_check));
+cal_idxs = 1:cal_step:height(T_adsb);
+
 for idx = cal_idxs
-    t_lon = true_track_A(idx,1);  t_lat = true_track_A(idx,2);
+    t_lon = adsb_lon(idx);  t_lat = adsb_lat(idx);
+    if isnan(t_lon) || isnan(t_lat), continue; end
 
     [in1, ~, ~] = radar_coverage_check(params.radar1_lon, params.radar1_lat, ...
         t_lon, t_lat, params.radar1_beam_center_deg, params);
@@ -109,7 +113,7 @@ end
 
 dr1_est = mean(dr1_list);  da1_est = mean(da1_list);
 dr2_est = mean(dr2_list);  da2_est = mean(da2_list);
-fprintf('标校点数: R1=%d, R2=%d\n', length(dr1_list), length(dr2_list));
+fprintf('ADS-B合作目标标校点数: R1=%d, R2=%d\n', length(dr1_list), length(dr2_list));
 fprintf('R1: dr_est=%.1f (true=%.0f) m, da_est=%.4f (true=%.1f) deg\n', ...
     dr1_est, params.radar1_range_bias_m, da1_est, params.radar1_azimuth_bias_deg);
 fprintf('R2: dr_est=%.1f (true=%.0f) m, da_est=%.4f (true=%.1f) deg\n', ...
@@ -183,7 +187,11 @@ for k = 1:n_frames
     % ---- R2 多目标点迹生成 ----
     all_dets_r2 = [];
     for a = 1:params.num_aircraft
-        [pos, vel] = aircraft_trajectory_interpolate(trajs{a}, t2_grid(k));
+        tt = true_tracks{a}; t = t2_grid(k);
+        pos = [interp1(tt(:,5),tt(:,1),t,'linear','extrap'), ...
+               interp1(tt(:,5),tt(:,2),t,'linear','extrap')];
+        vel = [interp1(tt(:,5),tt(:,3),t,'linear','extrap'), ...
+               interp1(tt(:,5),tt(:,4),t,'linear','extrap')];
         add_clut = (a == 1);
         rng(params.random_seed + 10000 + a*1000 + k);
 
@@ -285,8 +293,19 @@ fprintf('R1总计: 点迹=%d, 目标检出=%d, 杂波=%d\n', ...
 fprintf('R2总计: 点迹=%d, 目标检出=%d, 杂波=%d\n', ...
     total_r2.detections, total_r2.target, total_r2.clutter);
 
-%% ==================== Phase 3.5: 定量误差评估 ====================
-fprintf('\n========== 定量误差评估 ==========\n');
+%% ==================== Phase 3.5: 时间对齐 ====================
+fprintf('\n========== Phase 3.5: 异步雷达时间对齐 ==========\n');
+fprintf('R1采样: 0s/30s/60s/...  R2采样: 13s/43s/73s/...  偏移=%ds\n', ...
+    params.time_offset_radar2_sec);
+fprintf('方案: 以R1时间网格为基准, R2 UKF状态用CV模型回退%ds\n', ...
+    params.time_offset_radar2_sec);
+
+aligned_R2_snapshots = time_align_tracks(trackSnapshots_R2, params);
+fprintf('R2航迹时间对齐完成 (%d帧, %d条航迹)\n', ...
+    n_frames, length(trackList_R2));
+
+%% ==================== Phase 3.6: 定量误差评估 ====================
+fprintf('\n========== Phase 3.6: 定量误差评估 ==========\n');
 
 % 构建真值结构体（供误差计算用）
 truthTrajs = cell(params.num_aircraft, 1);
@@ -403,7 +422,7 @@ R2.totalClutter = total_r2.clutter;
 
 outf = fullfile('results', sprintf('simulation_multi_%s.mat', datestr(now, 'yyyymmdd_HHMMSS')));
 save(outf, 'sysPara', 'calibResult', 'truthTrajs', 'R1', 'R2', 'params', ...
-    'errorStats_R1', 'errorStats_R2');
+    'errorStats_R1', 'errorStats_R2', 'aligned_R2_snapshots');
 fprintf('数据已保存: %s\n', outf);
 fprintf('\nDone.\n');
 

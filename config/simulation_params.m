@@ -68,6 +68,9 @@ function params = simulation_params()
     params.aircraft_C_speed_ms = 220.0;
     params.trajectory_mode = "straight";            % 大圆直飞
 
+    % ADS-B合作目标 (仅用于系统偏差标定)
+    params.adsb_csv_path = '2026-04-27 09-30-00.csv';
+
     % ==================== 5. 量测噪声 ====================
     params.range_noise_std_m = 4000.0;             % 距离噪声 σ (m)
     params.azimuth_noise_std_deg = 0.4;            % 方位噪声 σ (deg)

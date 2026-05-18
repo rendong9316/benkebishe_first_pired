@@ -27,13 +27,14 @@ function assoc_pairs = jnn_association(trackList, active_idx, detList, params)
         z_pred = trk.z_pred;
 
         % Adaptive geo gate + dynamic expansion on missed frames
+        % ADS-B real tracks have variable speed/heading → wider gates needed
         if trk.life <= 15
-            geo_gate_m = 120000;  % wide gate during UKF convergence
+            geo_gate_m = 150000;  % 150km during UKF convergence
         else
-            geo_gate_m = 80000;   % tighter gate for mature tracks
+            geo_gate_m = 100000;   % 100km for mature tracks
         end
         if trk.missed > 0
-            geo_gate_m = geo_gate_m + trk.missed * 15000;  % expand on misses
+            geo_gate_m = geo_gate_m + trk.missed * 20000;  % expand on misses
         end
 
         for j = 1:n_dets
