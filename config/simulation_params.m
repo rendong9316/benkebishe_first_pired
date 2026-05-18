@@ -69,8 +69,8 @@ function params = simulation_params()
     params.trajectory_mode = "straight";            % 大圆直飞
 
     % ==================== 5. 量测噪声 ====================
-    params.range_noise_std_m = 10000.0;            % 距离噪声 σ (m)
-    params.azimuth_noise_std_deg = 1.0;            % 方位噪声 σ (deg)
+    params.range_noise_std_m = 4000.0;             % 距离噪声 σ (m)
+    params.azimuth_noise_std_deg = 0.4;            % 方位噪声 σ (deg)
     params.radial_vel_noise_std_ms = 0.5;          % 径向速度噪声 σ (m/s)
 
     % ==================== 6. 系统偏差（真值 + UKF量测噪声） ====================
