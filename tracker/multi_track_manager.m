@@ -35,7 +35,7 @@ function [trackList, tempPool, trackSnapshot] = multi_track_manager(...
             trackList{t} = trk;
         end
         active_idx = find_active(trackList);
-        trackList = manage_track_quality(trackList, active_idx, params);
+        trackList = manage_track_quality(trackList, active_idx, params, frame_id);
         trackSnapshot.trackList = trackList;
         return;
     end
@@ -153,7 +153,7 @@ function [trackList, tempPool, trackSnapshot] = multi_track_manager(...
     end
 
     % ---- Step 7: Quality state machine ----
-    trackList = manage_track_quality(trackList, active_idx, params);
+    trackList = manage_track_quality(trackList, active_idx, params, frame_id);
 
     % ---- Step 8: Initiate new tracks from remaining points ----
     unused_dets = detList(~point_used);

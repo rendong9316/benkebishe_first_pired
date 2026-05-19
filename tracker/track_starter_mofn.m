@@ -81,6 +81,47 @@ function [trackList, tempPool] = track_starter_mofn(trackList, tempPool, ...
 
         new_ukf = ukf_filter_init(ukf_tpl, first_det, last_det);
 
+        % ---- 航迹复活检查: 候选是否为已死亡航迹的延续 ----
+        revived = false;
+        revival_gate_m = 100000;   % 100km接续判定门限
+        revival_window   = 15;      % 死亡15帧内可复活
+
+        for t = 1:length(trackList)
+            trk = trackList{t};
+            if trk.type ~= 7, continue; end  % 只查HISTORY
+            if ~isfield(trk, 'death_frame'), continue; end
+            if frame_id - trk.death_frame > revival_window, continue; end
+
+            % 候选首点 vs 死亡航迹最后位置
+            dist = sphere_utils_haversine_distance(...
+                first_det.lon, first_det.lat, trk.lon, trk.lat);
+            if dist < revival_gate_m
+                % 复活!
+                trk.type = 6;           % 恢复为TEMPORARY
+                trk.quality = 9;        % 重置质量
+                trk.missed = 0;         % 清零漏检
+                trk.ukf = new_ukf;      % 用新UKF重新初始化
+                trk.lat = new_ukf.x(3);
+                trk.lon = new_ukf.x(1);
+                trk.life = trk.life;    % 保留历史life计数
+                trk.assoc_det = last_det;
+                trk.nis_history = [];
+                trk.init_points = n_pts;
+                if ~isfield(trk, 'revived')
+                    trk.revived = 0;
+                end
+                trk.revived = trk.revived + 1;
+                trackList{t} = trk;
+                promoted(c) = true;
+                revived = true;
+                fprintf('  [复活] Frame %d: HISTORY#%d 复活 (距死亡%d帧, 接续距离%.0fkm)\n', ...
+                    frame_id, trk.id, frame_id - trk.death_frame, dist/1000);
+                break;
+            end
+        end
+
+        if revived, continue; end
+
         next_id = length(trackList) + 1;
         new_trk.id = next_id;
         new_trk.type = 6;
@@ -94,6 +135,7 @@ function [trackList, tempPool] = track_starter_mofn(trackList, tempPool, ...
         new_trk.nis_history = [];
         new_trk.birth_frame = frame_id;
         new_trk.init_points = n_pts;
+        new_trk.death_frame = NaN;  % 未死亡
         trackList{end+1} = new_trk;
         promoted(c) = true;
     end

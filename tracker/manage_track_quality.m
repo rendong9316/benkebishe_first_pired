@@ -10,7 +10,7 @@
 %   HISTORY(7)   保持
 % =========================================================================
 
-function trackList = manage_track_quality(trackList, active_idx, params)
+function trackList = manage_track_quality(trackList, active_idx, params, frame_id)
     TYPE_RELIABLE   = 1;
     TYPE_MAINTAIN   = 2;
     TYPE_TEMPORARY  = 6;
@@ -33,6 +33,7 @@ function trackList = manage_track_quality(trackList, active_idx, params)
                     trk.quality = trk.quality - 1;
                     if trk.quality < 3
                         trk.type = TYPE_HISTORY;
+                        trk.death_frame = frame_id;
                     end
                 end
 
@@ -56,6 +57,7 @@ function trackList = manage_track_quality(trackList, active_idx, params)
                     trk.quality = trk.quality - 1;
                     if trk.quality < 3
                         trk.type = TYPE_HISTORY;
+                        trk.death_frame = frame_id;
                     end
                 end
 
@@ -63,9 +65,10 @@ function trackList = manage_track_quality(trackList, active_idx, params)
                 % 保持HISTORY状态不变
         end
 
-        % K_loss仅对TEMPORARY航迹强制终止（成熟航迹靠质量自然衰减）
+        % K_loss仅对TEMPORARY航迹强制终止
         if trk.type == TYPE_TEMPORARY && trk.missed >= params.tracker_K_loss
             trk.type = TYPE_HISTORY;
+            trk.death_frame = frame_id;
         end
 
         trackList{t} = trk;
