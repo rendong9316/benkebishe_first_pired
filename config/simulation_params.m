@@ -96,8 +96,8 @@ function params = simulation_params()
     params.ukf_mode = "standard";
 
     % ==================== 8. 航迹管理参数 ====================
-    params.tracker_M = 3;                          % M/N起始: N帧中至少M帧
-    params.tracker_N = 7;
+    params.tracker_M = 4;                          % M/N起始: N帧中至少M帧（防杂波假起始）
+    params.tracker_N = 8;                          % 扩展窗口适配M=4 + Pd=60%
     params.tracker_K_loss = 10;                    % 连续K帧无关联→终止（Pd=60%下0.4^10≈0）
     params.gate_sigma = 3.0;                       % 关联波门: 3σ椭圆门
 

@@ -138,12 +138,12 @@ function ok = validate_candidate_sequence(cand)
         lons(1), lats(1), lons(end), lats(end)) / 1000;
 
     % 验证条件:
-    % 1. 最大残差 < 50 km (点迹基本共线)
-    % 2. 若总跨度>100km，要求残差<跨度的40% (防止随机游走)
-    if residuals_km > 50000
+    % 1. 最大残差 < 30 km (严格共线性)
+    % 2. 若总跨度>100km，要求残差<跨度的30%
+    if residuals_km > 30000
         ok = false; return;
     end
-    if total_dist_km > 100 && residuals_km > 0.4 * total_dist_km
+    if total_dist_km > 100 && residuals_km > 0.3 * total_dist_km
         ok = false; return;
     end
     if total_dist_km > 500
