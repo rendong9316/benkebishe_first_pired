@@ -21,8 +21,9 @@ function plot_multi_track_result(true_tracks, labels, detList_R1, detList_R2, ..
     for a = 1:n_ac
         tt = true_tracks{a};
         col = ac_colors{a};
-        h_truth(a) = geoplot(ax, tt(:,2), tt(:,1), '--', 'Color', col, ...
-            'LineWidth', 2, 'DisplayName', sprintf('%s 真值', labels{a}));
+        h_truth(a) = geoplot(ax, tt(:,2), tt(:,1), '--s', 'Color', col, ...
+            'LineWidth', 1.5, 'MarkerSize', 5, 'MarkerFaceColor', col, ...
+            'DisplayName', sprintf('%s 真值', labels{a}));
     end
 
     % ---- Layer 1: R1 原始点迹（校准前） ----
@@ -55,8 +56,9 @@ function plot_multi_track_result(true_tracks, labels, detList_R1, detList_R2, ..
     for t = 1:length(r1_tracks)
         trk = r1_tracks{t};
         if length(trk.lat_history) > 2
-            h_r1_ukf(t) = geoplot(ax, trk.lat_history, trk.lon_history, 'b-', ...
-                'LineWidth', 2.5, 'DisplayName', sprintf('R1 UKF#%d', trk.id));
+            h_r1_ukf(t) = geoplot(ax, trk.lat_history, trk.lon_history, 'b-o', ...
+                'LineWidth', 2.0, 'MarkerSize', 5, 'MarkerFaceColor', 'b', ...
+                'DisplayName', sprintf('R1 UKF#%d', trk.id));
         end
     end
 
@@ -90,8 +92,9 @@ function plot_multi_track_result(true_tracks, labels, detList_R1, detList_R2, ..
     for t = 1:length(r2_tracks)
         trk = r2_tracks{t};
         if length(trk.lat_history) > 2
-            h_r2_ukf(t) = geoplot(ax, trk.lat_history, trk.lon_history, 'r-', ...
-                'LineWidth', 2.5, 'DisplayName', sprintf('R2 UKF#%d', trk.id));
+            h_r2_ukf(t) = geoplot(ax, trk.lat_history, trk.lon_history, 'r-^', ...
+                'LineWidth', 2.0, 'MarkerSize', 5, 'MarkerFaceColor', 'r', ...
+                'DisplayName', sprintf('R2 UKF#%d', trk.id));
         end
     end
 

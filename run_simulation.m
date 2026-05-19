@@ -164,26 +164,13 @@ end
 
 fprintf('原始点迹生成完成: R1共%d帧, R2共%d帧\n', n_frames, n_frames);
 
-%% ==================== Phase 3: 时间对齐（一阶外推） ====================
-fprintf('\n========== Phase 3: 时间对齐（一阶外推） ==========\n');
+%% ==================== Phase 3: 时间对齐（航迹级, 延后到匹配前） ====================
+fprintf('\n========== Phase 3: 时间对齐策略 ==========\n');
 fprintf('R1采样: 0s/30s/60s/...  R2采样: 13s/43s/73s/...  偏移=%ds\n', ...
     params.time_offset_radar2_sec);
-fprintf('算法: 利用双基地径向速度 vd 外推群距离 Rg(t)=Rg(t+dt)-vd*dt\n');
-
-dt_align = params.time_offset_radar2_sec;  % 13s
-
-detAligned_R2 = cell(n_frames, 1);
-for k = 1:n_frames
-    dets = detRaw_R2{k};
-    for d = 1:length(dets)
-        % 一阶外推：利用径向速度修正群距离
-        % Rg(t) ≈ Rg(t+dt) - pvr * dt
-        dets(d).prange = dets(d).prange - dets(d).pvr * dt_align;
-        dets(d).time_sec = dets(d).time_sec - dt_align;
-    end
-    detAligned_R2{k} = dets;
-end
-fprintf('R2点迹时间对齐+距离外推完成 (%d帧)\n', n_frames);
+fprintf('策略: 点迹不做对齐, 两部雷达各自在原时间网格上滤波跟踪\n');
+fprintf('      航迹级对齐延后到 Phase 6 匹配前, 用 CV 模型全状态外推\n');
+fprintf('理由: UKF滤波后的速度估计(2D矢量)优于原始单帧多普勒(仅径向分量)\n');
 
 %% ==================== Phase 4: 偏差校正 + 几何反解 ====================
 fprintf('\n========== Phase 4: 偏差校正 ==========\n');
@@ -217,8 +204,8 @@ for k = 1:n_frames
     end
     detList_R1{k} = dets_r1;
 
-    % R2: 偏差校正（使用时间对齐后的点迹）
-    dets_r2 = detAligned_R2{k};
+    % R2: 偏差校正（使用原始时间网格点迹, 不做时间对齐）
+    dets_r2 = detRaw_R2{k};
     for d = 1:length(dets_r2)
         Rgc = dets_r2(d).prange - dr2_est;
         azc = dets_r2(d).paz - da2_est;
@@ -303,9 +290,10 @@ for t = 1:length(trackList_R2)
     fprintf('  R2航迹#%d: type=%s quality=%d life=%d\n', trk.id, type_str, trk.quality, trk.life);
 end
 
-%% ==================== Phase 6: 定量误差评估 ====================
-fprintf('\n========== Phase 6: 定量误差评估 ==========\n');
+%% ==================== Phase 6: 航迹匹配 ====================
+fprintf('\n========== Phase 6: 航迹匹配 (双门限法) ==========\n');
 
+% 构建真值航迹结构 (用于匹配验证和误差评估)
 truthTrajs = cell(params.num_aircraft, 1);
 for a = 1:params.num_aircraft
     tt = true_tracks{a};
@@ -315,9 +303,143 @@ for a = 1:params.num_aircraft
         'lon_rate', tt(:,3), 'lat_rate', tt(:,4));
 end
 
+matcher = track_matcher(trackSnapshots_R1, trackSnapshots_R2, params);
+n_matched = length(matcher.matched_pairs);
+fprintf('匹配完成: %d 对航迹成功关联\n', n_matched);
+
+matched_ac_r1 = zeros(n_matched, 1);
+matched_ac_r2 = zeros(n_matched, 1);
+for p = 1:n_matched
+    mp = matcher.matched_pairs(p);
+    r1_idx = find(matcher.r1_ids == mp.R1_track_id, 1);
+    r2_idx = find(matcher.r2_ids == mp.R2_track_id, 1);
+
+    best_d = inf; best_a = 0;
+    for a = 1:params.num_aircraft
+        tt = truthTrajs{a};
+        t_lat = interp1(tt.time_sec, tt.lat, t1_grid, 'linear', 'extrap');
+        t_lon = interp1(tt.time_sec, tt.lon, t1_grid, 'linear', 'extrap');
+        if ~isempty(r1_idx)
+            r1_lons = squeeze(matcher.r1_pos(r1_idx,:,1))';
+            r1_lats = squeeze(matcher.r1_pos(r1_idx,:,2))';
+            valid = ~isnan(r1_lons);
+            if any(valid)
+                d = mean(haversine_km_vec2(r1_lons(valid), r1_lats(valid), ...
+                    t_lon(valid), t_lat(valid)));
+                if ~isnan(d) && d < best_d
+                    best_d = d; best_a = a;
+                end
+            end
+        end
+    end
+    matched_ac_r1(p) = best_a;
+
+    best_d = inf; best_a = 0;
+    for a = 1:params.num_aircraft
+        tt = truthTrajs{a};
+        t_lat = interp1(tt.time_sec, tt.lat, t1_grid, 'linear', 'extrap');
+        t_lon = interp1(tt.time_sec, tt.lon, t1_grid, 'linear', 'extrap');
+        if ~isempty(r2_idx)
+            r2_lons = squeeze(matcher.r2_pos(r2_idx,:,1))';
+            r2_lats = squeeze(matcher.r2_pos(r2_idx,:,2))';
+            valid = ~isnan(r2_lons);
+            if any(valid)
+                d = mean(haversine_km_vec2(r2_lons(valid), r2_lats(valid), ...
+                    t_lon(valid), t_lat(valid)));
+                if ~isnan(d) && d < best_d
+                    best_d = d; best_a = a;
+                end
+            end
+        end
+    end
+    matched_ac_r2(p) = best_a;
+
+    fprintf('  Matched pair %d: R1#%d->Aircraft%s, R2#%d->Aircraft%s\n', ...
+        p, mp.R1_track_id, aircraft_labels{matched_ac_r1(p)}, ...
+        mp.R2_track_id, aircraft_labels{matched_ac_r2(p)});
+end
+
+n_correct = sum(matched_ac_r1 == matched_ac_r2);
+fprintf('匹配正确率: %d/%d = %.0f%%\n', n_correct, n_matched, n_correct/max(n_matched,1)*100);
+
+%% ==================== Phase 7: 航迹融合 ====================
+fprintf('\n========== Phase 7: 航迹融合 (四种算法) ==========\n');
+
+method_names = {'SCC', 'BC', 'CI', 'FCI'};
+all_fused_snapshots = cell(length(method_names), 1);
+
+for m = 1:length(method_names)
+    method = method_names{m};
+    fprintf('  运行 %s 融合...\n', method);
+    all_fused_snapshots{m} = run_track_fusion(matcher.matched_pairs, ...
+        trackSnapshots_R1, matcher.aligned_R2, params, method);
+end
+fprintf('融合完成: %d 种算法\n', length(method_names));
+
+%% ==================== Phase 8: 融合误差评估 ====================
+fprintf('\n========== Phase 8: 融合误差评估 ==========\n');
+
+fusion_eval = evaluate_fusion(all_fused_snapshots, method_names, ...
+    matcher.matched_pairs, trackSnapshots_R1, trackSnapshots_R2, ...
+    truthTrajs, n_frames, params.dt_sec, matcher);
+
+% 打印融合 vs 单站对比表
+fprintf('\n--- 融合误差对比 (RMSE km) ---\n');
+fprintf('%-8s', '算法');
+for a = 1:params.num_aircraft
+    fprintf('  飞机%s  ', aircraft_labels{a});
+end
+fprintf('  总体\n');
+fprintf('%-8s', '------');
+for a = 1:params.num_aircraft
+    fprintf('  ------');
+end
+fprintf('  ------\n');
+
+all_method_labels = [method_names, {'R1_only', 'R2_only'}];
+for m = 1:length(all_method_labels)
+    fprintf('%-8s', all_method_labels{m});
+    for a = 1:params.num_aircraft
+        idx = (a-1)*length(all_method_labels) + m;
+        s = fusion_eval.summary(idx).s;
+        fprintf('  %6.1f', s.rms);
+    end
+    fprintf('  %6.1f\n', fusion_eval.overall(m).s.rms);
+end
+
+fprintf('\n--- 融合误差对比 (中位 km) ---\n');
+fprintf('%-8s', '算法');
+for a = 1:params.num_aircraft
+    fprintf('  飞机%s  ', aircraft_labels{a});
+end
+fprintf('  总体\n');
+for m = 1:length(all_method_labels)
+    fprintf('%-8s', all_method_labels{m});
+    for a = 1:params.num_aircraft
+        idx = (a-1)*length(all_method_labels) + m;
+        s = fusion_eval.summary(idx).s;
+        fprintf('  %6.1f', s.median);
+    end
+    fprintf('  %6.1f\n', fusion_eval.overall(m).s.median);
+end
+
+% 计算融合收益: 最佳融合 vs min(R1,R2)
+rms_vals = arrayfun(@(x) x.s.rms, fusion_eval.overall(1:4));
+[best_fusion_rmse, best_m] = min(rms_vals);
+fprintf('\n最佳融合算法: %s (RMSE=%.1fkm)\n', method_names{best_m}, best_fusion_rmse);
+r1_rmse = fusion_eval.overall(5).s.rms;
+r2_rmse = fusion_eval.overall(6).s.rms;
+fprintf('融合 vs 最佳单站: %.1f%% 改善\n', ...
+    (1 - best_fusion_rmse/min(r1_rmse, r2_rmse))*100);
+
+%% ==================== Phase 9: 定量误差评估 (单站跟踪) ====================
+fprintf('\n========== Phase 9: 单站跟踪误差评估 ==========\n');
+
 errorStats_R1 = compute_tracking_errors(trackSnapshots_R1, detList_R1, ...
     truthTrajs, n_frames, params.dt_sec, 'R1');
-errorStats_R2 = compute_tracking_errors(trackSnapshots_R2, detList_R2, ...
+% R2航迹需时间对齐后再做误差评估 (跟踪在原时间网格, 评估用统一网格)
+aligned_R2_eval = time_align_tracks(trackSnapshots_R2, params);
+errorStats_R2 = compute_tracking_errors(aligned_R2_eval, detList_R2, ...
     truthTrajs, n_frames, params.dt_sec, 'R2');
 
 for es = {errorStats_R1, errorStats_R2}
@@ -336,8 +458,8 @@ for es = {errorStats_R1, errorStats_R2}
         e.overall.ukf.mean, e.overall.ukf.rms, e.overall.ukf.pct95);
 end
 
-%% ==================== Phase 7: 可视化 + 数据保存 ====================
-fprintf('\n========== Phase 7: 可视化 ==========\n');
+%% ==================== Phase 10: 可视化 + 数据保存 ====================
+fprintf('\n========== Phase 10: 可视化 ==========\n');
 if ~exist('results', 'dir'), mkdir('results'); end
 
 plot_scene_overview_multi(true_tracks, aircraft_labels, params, 'results');
@@ -349,7 +471,12 @@ plot_multi_track_result(true_tracks, aircraft_labels, detList_R1, detList_R2, ..
     trackSnapshots_R1, trackSnapshots_R2, params, 'results');
 plot_error_analysis(errorStats_R1, errorStats_R2, 'results');
 
-fprintf('\n========== Phase 7: 数据保存 ==========\n');
+% 融合可视化
+plot_fusion_result(true_tracks, aircraft_labels, trackSnapshots_R1, trackSnapshots_R2, ...
+    all_fused_snapshots, method_names, matcher.matched_pairs, fusion_eval, ...
+    truthTrajs, params, 'results');
+
+fprintf('\n========== Phase 10: 数据保存 ==========\n');
 sysPara = struct(...
     'dt_sec', params.dt_sec, 'n_frames', n_frames, ...
     'R1_lon', params.radar1_lon, 'R1_lat', params.radar1_lat, ...
@@ -393,7 +520,8 @@ R2 = struct('detRaw', {detRaw_R2}, 'detList', {detList_R2}, ...
 
 outf = fullfile('results', sprintf('simulation_%s.mat', datestr(now, 'yyyymmdd_HHMMSS')));
 save(outf, 'sysPara', 'calibResult', 'truthTrajs', 'R1', 'R2', 'params', ...
-    'errorStats_R1', 'errorStats_R2');
+    'errorStats_R1', 'errorStats_R2', 'matcher', 'fusion_eval', ...
+    'all_fused_snapshots', 'method_names');
 fprintf('数据已保存: %s\n', outf);
 fprintf('\nDone.\n');
 
@@ -419,5 +547,17 @@ function s = count_det_stats(detList)
         for d = 1:length(dets)
             if dets(d).is_clutter, s.clutter = s.clutter + 1; end
         end
+    end
+end
+
+function d_vec = haversine_km_vec2(lons1, lats1, lons2, lats2)
+    R = 6371;
+    d_vec = zeros(size(lons1));
+    for i = 1:length(lons1)
+        dlat = deg2rad(lats2(i) - lats1(i));
+        dlon = deg2rad(lons2(i) - lons1(i));
+        a = sin(dlat/2)^2 + cos(deg2rad(lats1(i))) * cos(deg2rad(lats2(i))) * sin(dlon/2)^2;
+        a = max(0, min(1, a));
+        d_vec(i) = R * 2 * atan2(sqrt(a), sqrt(1 - a));
     end
 end

@@ -19,8 +19,9 @@ function plot_multi_target_detections(true_tracks, labels, detList_R1, detList_R
     for a = 1:length(true_tracks)
         tt = true_tracks{a};
         col = ac_colors{a};
-        geoplot(ax, tt(:,2), tt(:,1), '--', 'Color', col, ...
-            'LineWidth', 1.5, 'DisplayName', sprintf('飞机%s 真值', labels{a}));
+        geoplot(ax, tt(:,2), tt(:,1), '--s', 'Color', col, ...
+            'LineWidth', 1.2, 'MarkerSize', 4, 'MarkerFaceColor', col, ...
+            'DisplayName', sprintf('飞机%s 真值', labels{a}));
     end
 
     % R1 校准后关联点迹 (按aircraft_id着色)
