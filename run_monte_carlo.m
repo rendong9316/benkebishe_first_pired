@@ -1,153 +1,18 @@
 % =========================================================================
 % run_monte_carlo.m
-% 蒙特卡洛仿真: N次独立运行, 统计匹配/融合/滤波指标的均值和置信区间
+% 蒙特卡洛仿真: 1000次独立运行, 统计匹配/融合/滤波指标
 % =========================================================================
-% 不改动 run_simulation.m, 抽取其 Phase 0-9 核心逻辑为 simulate_once
+% 优化: Phase0(航迹生成)+Phase1(ADS-B标定) 预计算, parfor并行Phase2-9
 % =========================================================================
 
 function run_monte_carlo(N_mc)
-    if nargin < 1, N_mc = 100; end
+    if nargin < 1, N_mc = 1000; end
 
     addpath(genpath('.'));
-
-    % 先跑一次取参数结构
     params = simulation_params();
 
-    % 预分配结果数组
-    match_rate     = zeros(N_mc, 1);
-    fusion_rms     = zeros(N_mc, 1);
-    fusion_med     = zeros(N_mc, 1);
-    r1_rms         = zeros(N_mc, 1);
-    r1_med         = zeros(N_mc, 1);
-    r2_rms         = zeros(N_mc, 1);
-    r2_med         = zeros(N_mc, 1);
-    improvement    = zeros(N_mc, 1);
-    ac_fusion_rms  = zeros(N_mc, params.num_aircraft);
-    ac_fusion_med  = zeros(N_mc, params.num_aircraft);
-    ac_r1_rms      = zeros(N_mc, params.num_aircraft);
-    ac_r2_rms      = zeros(N_mc, params.num_aircraft);
-    total_tracks_r1 = zeros(N_mc, 1);
-    total_tracks_r2 = zeros(N_mc, 1);
-    track_life_r1   = cell(N_mc, 1);
-    track_life_r2   = cell(N_mc, 1);
-
-    t_start = tic;
-
-    for mc = 1:N_mc
-        seed = mc;  % 每次独立随机种子
-        result = simulate_once(seed);
-
-        match_rate(mc)      = result.match_correct_rate;
-        fusion_rms(mc)      = result.fusion_rmse;
-        fusion_med(mc)      = result.fusion_median;
-        r1_rms(mc)          = result.r1_rmse;
-        r1_med(mc)          = result.r1_median;
-        r2_rms(mc)          = result.r2_rmse;
-        r2_med(mc)          = result.r2_median;
-        improvement(mc)     = result.improvement_pct;
-        ac_fusion_rms(mc,:) = result.ac_fusion_rmse;
-        ac_fusion_med(mc,:) = result.ac_fusion_med;
-        ac_r1_rms(mc,:)     = result.ac_r1_rmse;
-        ac_r1_med(mc,:)     = result.ac_r1_med;
-        ac_r2_rms(mc,:)     = result.ac_r2_rmse;
-        ac_r2_med(mc,:)     = result.ac_r2_med;
-        total_tracks_r1(mc) = result.n_tracks_r1;
-        total_tracks_r2(mc) = result.n_tracks_r2;
-        track_life_r1{mc}   = result.track_lives_r1;
-        track_life_r2{mc}   = result.track_lives_r2;
-
-        elapsed = toc(t_start);
-        eta = elapsed / mc * (N_mc - mc);
-        fprintf('MC %3d/%3d | elapsed %.0fs | ETA %.0fs | match=%.0f%% rms=%.1fkm med=%.1fkm\n', ...
-            mc, N_mc, elapsed, eta, match_rate(mc)*100, fusion_rms(mc), fusion_med(mc));
-    end
-
-    fprintf('\n========== Monte Carlo 统计汇总 (N=%d) ==========\n', N_mc);
-
-    % ---- 辅助函数: 打印均值±标准差 (忽略NaN) ----
-    function print_stat(label, values, unit)
-        if nargin < 3, unit = ''; end
-        v = values(~isnan(values));
-        if isempty(v)
-            fprintf('  %-20s  (无有效数据)\n', label);
-        else
-            fprintf('  %-20s  %.2f ± %.2f %s\n', label, mean(v), std(v), unit);
-        end
-    end
-    function print_pct(label, values)
-        v = values(~isnan(values));
-        if isempty(v)
-            fprintf('  %-20s  (无有效数据)\n', label);
-        else
-            fprintf('  %-20s  %.1f%% ± %.1f%%\n', label, mean(v)*100, std(v)*100);
-        end
-    end
-
-    fprintf('\n--- 匹配性能 ---\n');
-    print_pct('正确匹配率', match_rate);
-    n_complete = sum(total_tracks_r1 >= params.num_aircraft & total_tracks_r2 >= params.num_aircraft);
-    fprintf('  完整匹配运行数: %d/%d (%.0f%%)\n', n_complete, N_mc, n_complete/N_mc*100);
-    fprintf('  平均R1航迹数: %.1f ± %.1f\n', mean(total_tracks_r1), std(total_tracks_r1));
-    fprintf('  平均R2航迹数: %.1f ± %.1f\n', mean(total_tracks_r2), std(total_tracks_r2));
-
-    fprintf('\n--- 融合性能 (总体) ---\n');
-    print_stat('融合 RMSE', fusion_rms, 'km');
-    print_stat('融合 中位误差', fusion_med, 'km');
-    print_stat('R1 RMSE', r1_rms, 'km');
-    print_stat('R2 RMSE', r2_rms, 'km');
-    print_stat('融合 vs 最佳单站改善', improvement, '%');
-
-    fprintf('\n--- 融合性能 (分飞机) ---\n');
-    aircraft_labels = {'A', 'B', 'C'};
-    fprintf('  指标           ');
-    for a = 1:params.num_aircraft
-        fprintf('   飞机%-4s', aircraft_labels{a});
-    end
-    fprintf('    总体\n');
-
-    fprintf('  融合RMSE      ');
-    for a = 1:params.num_aircraft
-        fprintf('  %5.1f±%.1f', mean(ac_fusion_rms(:,a)), std(ac_fusion_rms(:,a)));
-    end
-    fprintf('  %5.1f±%.1f\n', mean(fusion_rms), std(fusion_rms));
-
-    fprintf('  融合中位      ');
-    for a = 1:params.num_aircraft
-        fprintf('  %5.1f±%.1f', mean(ac_fusion_med(:,a)), std(ac_fusion_med(:,a)));
-    end
-    fprintf('  %5.1f±%.1f\n', mean(fusion_med), std(fusion_med));
-
-    fprintf('  R1 RMSE       ');
-    for a = 1:params.num_aircraft
-        fprintf('  %5.1f±%.1f', mean(ac_r1_rms(:,a)), std(ac_r1_rms(:,a)));
-    end
-    fprintf('  %5.1f±%.1f\n', mean(r1_rms), std(r1_rms));
-
-    fprintf('  R2 RMSE       ');
-    for a = 1:params.num_aircraft
-        fprintf('  %5.1f±%.1f', mean(ac_r2_rms(:,a)), std(ac_r2_rms(:,a)));
-    end
-    fprintf('  %5.1f±%.1f\n', mean(r2_rms), std(r2_rms));
-
-    % ---- 保存 ----
-    if ~exist('results', 'dir'), mkdir('results'); end
-    outf = fullfile('results', sprintf('monte_carlo_N%d_%s.mat', N_mc, datestr(now, 'yyyymmdd_HHMMSS')));
-    save(outf, 'N_mc', 'match_rate', 'fusion_rms', 'fusion_med', ...
-        'r1_rms', 'r1_med', 'r2_rms', 'r2_med', 'improvement', ...
-        'ac_fusion_rms', 'ac_fusion_med', 'ac_r1_rms', 'ac_r1_med', 'ac_r2_rms', 'ac_r2_med', ...
-        'total_tracks_r1', 'total_tracks_r2', 'track_life_r1', 'track_life_r2');
-    fprintf('\n数据已保存: %s\n', outf);
-end
-
-% =========================================================================
-% simulate_once: 单次仿真 (抽取自 run_simulation.m Phase 0-9)
-% =========================================================================
-function result = simulate_once(seed)
-    params = simulation_params();
-    params.random_seed = seed;  % 覆盖随机种子
-    rng(params.random_seed);
-
-    % ---- Phase 0: 场景初始化 ----
+    % ====== 预计算 Phase 0: 场景初始化 (确定性) ======
+    fprintf('预计算 Phase 0 (航迹生成)...\n');
     aircraft_labels = {'A', 'B', 'C'};
     aircraft_wps = {params.aircraft_A_waypoints, params.aircraft_B_waypoints, ...
                     params.aircraft_C_waypoints};
@@ -164,9 +29,20 @@ function result = simulate_once(seed)
     t1_grid = params.time_offset_radar1_sec : params.dt_sec : trajs{1}.duration_sec;
     t2_grid = params.time_offset_radar2_sec : params.dt_sec : trajs{1}.duration_sec;
     n_frames = min(length(t1_grid), length(t2_grid));
+    fprintf('  帧数: %d\n', n_frames);
 
-    % ---- Phase 1: ADS-B偏差标定 ----
-    rng(params.random_seed);
+    % 真值航迹结构体 (用于误差评估)
+    truthTrajs = cell(params.num_aircraft, 1);
+    for a = 1:params.num_aircraft
+        tt = true_tracks{a};
+        truthTrajs{a} = struct('label', aircraft_labels{a}, 'speed_ms', aircraft_spds(a), ...
+            'time_sec', tt(:,5), 'lat', tt(:,2), 'lon', tt(:,1), ...
+            'lon_rate', tt(:,3), 'lat_rate', tt(:,4));
+    end
+
+    % ====== 预计算 Phase 1: ADS-B偏差标定 (大样本均值稳定) ======
+    fprintf('预计算 Phase 1 (ADS-B标定)...\n');
+    rng(42);  % 固定种子, 标定参数稳定
     T_adsb = readtable(params.adsb_csv_path, 'ReadVariableNames', false);
     adsb_lat = T_adsb.Var2;
     adsb_lon = T_adsb.Var3;
@@ -206,16 +82,201 @@ function result = simulate_once(seed)
     end
     dr1_est = mean(dr1_list); da1_est = mean(da1_list);
     dr2_est = mean(dr2_list); da2_est = mean(da2_list);
+    fprintf('  R1: dr=%.1fm da=%.4fdeg | R2: dr=%.1fm da=%.4fdeg\n', dr1_est, da1_est, dr2_est, da2_est);
+
+    % 打包预计算数据为struct (parfor要求单一变量传递)
+    pre = struct();
+    pre.params = params;
+    pre.trajs = {trajs};
+    pre.n_frames = n_frames;
+    pre.t1_grid = t1_grid;
+    pre.t2_grid = t2_grid;
+    pre.dr1_est = dr1_est; pre.da1_est = da1_est;
+    pre.dr2_est = dr2_est; pre.da2_est = da2_est;
+    pre.truthTrajs = {truthTrajs};
+    pre.aircraft_labels = {aircraft_labels};
+    pre.aircraft_spds = aircraft_spds;
+
+    % ====== Monte Carlo 主循环 (parfor) ======
+    method_names = {'SCC', 'BC', 'CI', 'FCI'};
+    n_methods = length(method_names);
+    n_ac = params.num_aircraft;
+
+    % 预分配结果数组
+    match_rate     = zeros(N_mc, 1);
+    n_matched_arr  = zeros(N_mc, 1);
+    fusion_rms     = zeros(N_mc, 1);
+    fusion_med     = zeros(N_mc, 1);
+    r1_rms         = zeros(N_mc, 1);
+    r1_med         = zeros(N_mc, 1);
+    r2_rms         = zeros(N_mc, 1);
+    r2_med         = zeros(N_mc, 1);
+    improvement    = zeros(N_mc, 1);
+    ac_fusion_rms  = zeros(N_mc, n_ac);
+    ac_fusion_med  = zeros(N_mc, n_ac);
+    ac_r1_rms      = zeros(N_mc, n_ac);
+    ac_r1_med      = zeros(N_mc, n_ac);
+    ac_r2_rms      = zeros(N_mc, n_ac);
+    ac_r2_med      = zeros(N_mc, n_ac);
+    total_tracks_r1 = zeros(N_mc, 1);
+    total_tracks_r2 = zeros(N_mc, 1);
+    best_m_arr      = zeros(N_mc, 1);
+
+    t_start = tic;
+    fprintf('\n========== Monte Carlo N=%d (parfor 6 workers) ==========\n', N_mc);
+
+    parfor mc = 1:N_mc
+        seed = mc * 100 + 1;  % 确保种子分散
+        result = simulate_once_parallel(pre, seed);
+
+        match_rate(mc)      = result.match_correct_rate;
+        n_matched_arr(mc)   = result.n_matched;
+        fusion_rms(mc)      = result.fusion_rmse;
+        fusion_med(mc)      = result.fusion_median;
+        r1_rms(mc)          = result.r1_rmse;
+        r1_med(mc)          = result.r1_median;
+        r2_rms(mc)          = result.r2_rmse;
+        r2_med(mc)          = result.r2_median;
+        improvement(mc)     = result.improvement_pct;
+        ac_fusion_rms(mc,:) = result.ac_fusion_rmse;
+        ac_fusion_med(mc,:) = result.ac_fusion_med;
+        ac_r1_rms(mc,:)     = result.ac_r1_rmse;
+        ac_r1_med(mc,:)     = result.ac_r1_med;
+        ac_r2_rms(mc,:)     = result.ac_r2_rmse;
+        ac_r2_med(mc,:)     = result.ac_r2_med;
+        total_tracks_r1(mc) = result.n_tracks_r1;
+        total_tracks_r2(mc) = result.n_tracks_r2;
+        best_m_arr(mc)      = result.best_fusion_method;
+    end
+
+    elapsed = toc(t_start);
+    fprintf('\nMonte Carlo 完成: %d 次 / %.0f 秒 (%.1f 秒/次)\n', N_mc, elapsed, elapsed/N_mc);
+
+    % ====== 统计分析 ======
+    fprintf('\n========== Monte Carlo 统计汇总 (N=%d) ==========\n', N_mc);
+
+    function p(label, vals, unit)
+        if nargin < 3, unit = ''; end
+        v = vals(~isnan(vals) & ~isinf(vals));
+        if isempty(v)
+            fprintf('  %-25s (无有效数据)\n', label);
+        else
+            fprintf('  %-25s  %7.2f ± %6.2f %s  [%5.1f, %5.1f]\n', ...
+                label, mean(v), std(v), unit, prctile(v,5), prctile(v,95));
+        end
+    end
+
+    fprintf('\n--- 匹配性能 ---\n');
+    p('正确匹配率', match_rate, '');
+    n_complete = sum(total_tracks_r1 >= n_ac & total_tracks_r2 >= n_ac);
+    fprintf('  完整匹配运行数: %d/%d (%.0f%%)\n', n_complete, N_mc, n_complete/N_mc*100);
+    p('匹配对数', n_matched_arr, '对');
+    p('R1活跃航迹数', total_tracks_r1, '条');
+    p('R2活跃航迹数', total_tracks_r2, '条');
+
+    fprintf('\n--- 融合性能 (总体, 最佳融合算法) ---\n');
+    p('融合 RMSE', fusion_rms, 'km');
+    p('融合 中位误差', fusion_med, 'km');
+    p('R1_only RMSE', r1_rms, 'km');
+    p('R2_only RMSE', r2_rms, 'km');
+    p('融合 vs 最佳单站改善', improvement, '%');
+
+    % 最佳算法分布
+    fprintf('\n--- 最佳融合算法分布 ---\n');
+    for m = 1:n_methods
+        cnt = sum(best_m_arr == m);
+        fprintf('  %s: %d 次 (%.1f%%)\n', method_names{m}, cnt, cnt/N_mc*100);
+    end
+
+    fprintf('\n--- 分飞机 RMSE (最佳融合) ---\n');
+    fprintf('  %-8s', '算法');
+    for a = 1:n_ac
+        fprintf('  飞机%-4s  ', pre.aircraft_labels{1}{a});
+    end
+    fprintf('  总体\n');
+    fprintf('  Fusion ');
+    for a = 1:n_ac
+        v = ac_fusion_rms(:,a); v = v(~isnan(v) & ~isinf(v));
+        fprintf('%7.1f±%.1f', mean(v), std(v));
+    end
+    v = fusion_rms(~isnan(fusion_rms) & ~isinf(fusion_rms));
+    fprintf('%7.1f±%.1f\n', mean(v), std(v));
+    fprintf('  R1     ');
+    for a = 1:n_ac
+        v = ac_r1_rms(:,a); v = v(~isnan(v) & ~isinf(v));
+        fprintf('%7.1f±%.1f', mean(v), std(v));
+    end
+    v = r1_rms(~isnan(r1_rms) & ~isinf(r1_rms));
+    fprintf('%7.1f±%.1f\n', mean(v), std(v));
+    fprintf('  R2     ');
+    for a = 1:n_ac
+        v = ac_r2_rms(:,a); v = v(~isnan(v) & ~isinf(v));
+        fprintf('%7.1f±%.1f', mean(v), std(v));
+    end
+    v = r2_rms(~isnan(r2_rms) & ~isinf(r2_rms));
+    fprintf('%7.1f±%.1f\n', mean(v), std(v));
+
+    fprintf('\n--- 分飞机中位误差 (最佳融合) ---\n');
+    fprintf('  Fusion ');
+    for a = 1:n_ac
+        v = ac_fusion_med(:,a); v = v(~isnan(v) & ~isinf(v));
+        fprintf('%7.1f±%.1f', mean(v), std(v));
+    end
+    v = fusion_med(~isnan(fusion_med) & ~isinf(fusion_med));
+    fprintf('%7.1f±%.1f\n', mean(v), std(v));
+    fprintf('  R1     ');
+    for a = 1:n_ac
+        v = ac_r1_med(:,a); v = v(~isnan(v) & ~isinf(v));
+        fprintf('%7.1f±%.1f', mean(v), std(v));
+    end
+    v = r1_med(~isnan(r1_med) & ~isinf(r1_med));
+    fprintf('%7.1f±%.1f\n', mean(v), std(v));
+    fprintf('  R2     ');
+    for a = 1:n_ac
+        v = ac_r2_med(:,a); v = v(~isnan(v) & ~isinf(v));
+        fprintf('%7.1f±%.1f', mean(v), std(v));
+    end
+    v = r2_med(~isnan(r2_med) & ~isinf(r2_med));
+    fprintf('%7.1f±%.1f\n', mean(v), std(v));
+
+    % ====== 保存 ======
+    if ~exist('results', 'dir'), mkdir('results'); end
+    outf = fullfile('results', sprintf('monte_carlo_N%d_%s.mat', N_mc, datestr(now, 'yyyymmdd_HHMMSS')));
+    save(outf, 'N_mc', 'match_rate', 'n_matched_arr', 'fusion_rms', 'fusion_med', ...
+        'r1_rms', 'r1_med', 'r2_rms', 'r2_med', 'improvement', ...
+        'ac_fusion_rms', 'ac_fusion_med', 'ac_r1_rms', 'ac_r1_med', 'ac_r2_rms', 'ac_r2_med', ...
+        'total_tracks_r1', 'total_tracks_r2', 'best_m_arr', 'method_names', ...
+        'aircraft_labels', 'elapsed');
+    fprintf('\n数据已保存: %s\n', outf);
+    fprintf('Done.\n');
+end
+
+% =========================================================================
+% simulate_once_parallel: parfor兼容的单次仿真
+% =========================================================================
+function result = simulate_once_parallel(pre, seed)
+    params = pre.params;
+    trajs = pre.trajs{1};
+    n_frames = pre.n_frames;
+    t1_grid = pre.t1_grid;
+    t2_grid = pre.t2_grid;
+    dr1_est = pre.dr1_est; da1_est = pre.da1_est;
+    dr2_est = pre.dr2_est; da2_est = pre.da2_est;
+    truthTrajs = pre.truthTrajs{1};
+    aircraft_labels = pre.aircraft_labels{1};
+    n_ac = params.num_aircraft;
+
+    rng(seed);  % 每次独立随机种子
 
     % ---- Phase 2: 原始点迹生成 ----
     detRaw_R1 = cell(n_frames, 1);
     detRaw_R2 = cell(n_frames, 1);
     for k = 1:n_frames
         all_raw_r1 = [];
-        for a = 1:params.num_aircraft
+        for a = 1:n_ac
             [pos, vel] = aircraft_trajectory_interpolate(trajs{a}, t1_grid(k));
             add_clut = (a == 1);
-            rng(params.random_seed + a*1000 + k);
+            rng(seed + a*1000 + k);
             dets = generate_frame_detections(params.radar1_lon, params.radar1_lat, ...
                 params.radar1_tx_lon, params.radar1_tx_lat, ...
                 pos(1), pos(2), vel(1), vel(2), k, t1_grid(k), ...
@@ -227,10 +288,10 @@ function result = simulate_once(seed)
         detRaw_R1{k} = all_raw_r1;
 
         all_raw_r2 = [];
-        for a = 1:params.num_aircraft
+        for a = 1:n_ac
             [pos, vel] = aircraft_trajectory_interpolate(trajs{a}, t2_grid(k));
             add_clut = (a == 1);
-            rng(params.random_seed + 10000 + a*1000 + k);
+            rng(seed + 10000 + a*1000 + k);
             dets = generate_frame_detections(params.radar2_lon, params.radar2_lat, ...
                 params.radar2_tx_lon, params.radar2_tx_lat, ...
                 pos(1), pos(2), vel(1), vel(2), k, t2_grid(k), ...
@@ -298,14 +359,6 @@ function result = simulate_once(seed)
     end
 
     % ---- Phase 6: 航迹匹配 ----
-    truthTrajs = cell(params.num_aircraft, 1);
-    for a = 1:params.num_aircraft
-        tt = true_tracks{a};
-        truthTrajs{a} = struct('label', aircraft_labels{a}, 'speed_ms', aircraft_spds(a), ...
-            'time_sec', tt(:,5), 'lat', tt(:,2), 'lon', tt(:,1), ...
-            'lon_rate', tt(:,3), 'lat_rate', tt(:,4));
-    end
-
     matcher = track_matcher(trackSnapshots_R1, trackSnapshots_R2, params);
     n_matched = length(matcher.matched_pairs);
 
@@ -317,8 +370,8 @@ function result = simulate_once(seed)
         r1_idx = find(matcher.r1_ids == mp.R1_track_id, 1);
         r2_idx = find(matcher.r2_ids == mp.R2_track_id, 1);
 
-        best_d = inf;
-        for a = 1:params.num_aircraft
+        best_d = inf; best_a = 1;
+        for a = 1:n_ac
             tt = truthTrajs{a};
             t_lat = interp1(tt.time_sec, tt.lat, t1_grid, 'linear', 'extrap');
             t_lon = interp1(tt.time_sec, tt.lon, t1_grid, 'linear', 'extrap');
@@ -334,8 +387,8 @@ function result = simulate_once(seed)
         end
         matched_ac_r1(p) = best_a;
 
-        best_d = inf;
-        for a = 1:params.num_aircraft
+        best_d = inf; best_a = 1;
+        for a = 1:n_ac
             tt = truthTrajs{a};
             t_lat = interp1(tt.time_sec, tt.lat, t1_grid, 'linear', 'extrap');
             t_lon = interp1(tt.time_sec, tt.lon, t1_grid, 'linear', 'extrap');
@@ -368,12 +421,11 @@ function result = simulate_once(seed)
         matcher.matched_pairs, trackSnapshots_R1, trackSnapshots_R2, ...
         truthTrajs, n_frames, params.dt_sec, matcher);
 
-    % ---- 提取指标 ----
+    % ---- 提取指标 (最佳融合算法) ----
     n_methods = length(method_names);
     best_fusion_rmse = inf;
     best_fusion_med = NaN;
-    ac_fusion_rmse = zeros(1, params.num_aircraft);
-    ac_fusion_med = zeros(1, params.num_aircraft);
+    best_method = 1;
     for m = 1:n_methods
         if fusion_eval.overall(m).s.rms < best_fusion_rmse
             best_fusion_rmse = fusion_eval.overall(m).s.rms;
@@ -381,14 +433,20 @@ function result = simulate_once(seed)
             best_method = m;
         end
     end
-    for a = 1:params.num_aircraft
-        % 找最佳融合方法的逐飞机误差
-        idx = (a-1)*n_methods + best_method;
+
+    ac_fusion_rmse = zeros(1, n_ac);
+    ac_fusion_med = zeros(1, n_ac);
+    ac_r1_rmse = zeros(1, n_ac);
+    ac_r1_med = zeros(1, n_ac);
+    ac_r2_rmse = zeros(1, n_ac);
+    ac_r2_med = zeros(1, n_ac);
+
+    for a = 1:n_ac
+        idx = (a-1)*(n_methods+2) + best_method;
         s_f = fusion_eval.summary(idx).s;
         ac_fusion_rmse(a) = s_f.rms;
         ac_fusion_med(a) = s_f.median;
 
-        % R1单站逐飞机 (summary最后两行: n_methods+1=R1_only, n_methods+2=R2_only)
         s_r1 = fusion_eval.summary((a-1)*(n_methods+2) + n_methods+1).s;
         s_r2 = fusion_eval.summary((a-1)*(n_methods+2) + n_methods+2).s;
         ac_r1_rmse(a) = s_r1.rms;
@@ -405,14 +463,12 @@ function result = simulate_once(seed)
     improvement_pct = (1 - best_fusion_rmse/min(r1_rmse, r2_rmse)) * 100;
 
     % 航迹统计
-    n_tracks_r1 = sum(arrayfun(@(t) trackList_R1{t}.type ~= 7, 1:length(trackList_R1)));
-    n_tracks_r2 = sum(arrayfun(@(t) trackList_R2{t}.type ~= 7, 1:length(trackList_R2)));
-    track_lives_r1 = []; track_lives_r2 = [];
+    n_tracks_r1 = 0; n_tracks_r2 = 0;
     for t = 1:length(trackList_R1)
-        if trackList_R1{t}.type ~= 7, track_lives_r1(end+1) = trackList_R1{t}.life; end
+        if trackList_R1{t}.type ~= 7, n_tracks_r1 = n_tracks_r1 + 1; end
     end
     for t = 1:length(trackList_R2)
-        if trackList_R2{t}.type ~= 7, track_lives_r2(end+1) = trackList_R2{t}.life; end
+        if trackList_R2{t}.type ~= 7, n_tracks_r2 = n_tracks_r2 + 1; end
     end
 
     result = struct(...
@@ -432,9 +488,7 @@ function result = simulate_once(seed)
         'ac_r2_rmse', ac_r2_rmse, ...
         'ac_r2_med', ac_r2_med, ...
         'n_tracks_r1', n_tracks_r1, ...
-        'n_tracks_r2', n_tracks_r2, ...
-        'track_lives_r1', track_lives_r1, ...
-        'track_lives_r2', track_lives_r2);
+        'n_tracks_r2', n_tracks_r2);
 end
 
 function d_vec = haversine_km_vec(lon1, lat1, lon2, lat2)
