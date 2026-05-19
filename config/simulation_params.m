@@ -33,11 +33,11 @@ function params = simulation_params()
 
     % ==================== 5. 量测噪声（分站异构） ====================
     % R1 精密站: 大孔径接收阵列, 高SNR
-    params.radar1_range_noise_std_m = 5000.0;
-    params.radar1_azimuth_noise_std_deg = 0.5;
+    params.radar1_range_noise_std_m = 3000.0;
+    params.radar1_azimuth_noise_std_deg = 0.6;
     % R2 普通站: 小孔径, 边缘覆盖
-    params.radar2_range_noise_std_m = 7000.0;
-    params.radar2_azimuth_noise_std_deg = 0.7;
+    params.radar2_range_noise_std_m = 150000.0;
+    params.radar2_azimuth_noise_std_deg = 1.0;
     % 径向速度噪声 (两站共用)
     params.radial_vel_noise_std_ms = 0.5;
 
