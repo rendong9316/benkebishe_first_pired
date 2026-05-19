@@ -31,9 +31,14 @@ function params = simulation_params()
     params.aircraft_speed_ms = 230.0;
     params.trajectory_mode = "straight";
 
-    % ==================== 5. 量测噪声 ====================
-    params.range_noise_std_m = 4000.0;
-    params.azimuth_noise_std_deg = 0.4;
+    % ==================== 5. 量测噪声（分站异构） ====================
+    % R1 精密站: 大孔径接收阵列, 高SNR
+    params.radar1_range_noise_std_m = 5000.0;
+    params.radar1_azimuth_noise_std_deg = 0.5;
+    % R2 普通站: 小孔径, 边缘覆盖
+    params.radar2_range_noise_std_m = 7000.0;
+    params.radar2_azimuth_noise_std_deg = 0.7;
+    % 径向速度噪声 (两站共用)
     params.radial_vel_noise_std_ms = 0.5;
 
     % ==================== 6. 系统偏差 ====================
@@ -41,8 +46,10 @@ function params = simulation_params()
     params.radar1_azimuth_bias_deg = -3.0;
     params.radar2_range_bias_m = -15000.0;
     params.radar2_azimuth_bias_deg = 3.5;
-    params.ukf_range_std_m = params.range_noise_std_m;
-    params.ukf_azimuth_std_deg = params.azimuth_noise_std_deg;
+
+    % UKF量测噪声 (通用默认, 实际ukf_filter按雷达分别设置)
+    params.ukf_range_std_m = params.radar1_range_noise_std_m;
+    params.ukf_azimuth_std_deg = params.radar1_azimuth_noise_std_deg;
     params.ukf_rv_std_ms = params.radial_vel_noise_std_ms;
 
     % ==================== 7. UKF滤波参数 (单目标极简调优) ====================

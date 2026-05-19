@@ -82,8 +82,8 @@ for idx = 1:cal_step:height(T_adsb)
         r1 = sphere_utils_haversine_distance(params.radar1_lon, params.radar1_lat, t_lon, t_lat);
         Rg_true = r0 + r1;
         az_true = sphere_utils_azimuth(params.radar1_lon, params.radar1_lat, t_lon, t_lat);
-        Rg_meas = Rg_true + params.radar1_range_bias_m + randn() * params.range_noise_std_m;
-        az_meas = az_true + params.radar1_azimuth_bias_deg + randn() * params.azimuth_noise_std_deg;
+        Rg_meas = Rg_true + params.radar1_range_bias_m + randn() * params.radar1_range_noise_std_m;
+        az_meas = az_true + params.radar1_azimuth_bias_deg + randn() * params.radar1_azimuth_noise_std_deg;
         dr1_list(end+1) = Rg_meas - Rg_true;
         daz = az_meas - az_true;
         if daz > 180, daz = daz - 360; elseif daz < -180, daz = daz + 360; end
@@ -97,8 +97,8 @@ for idx = 1:cal_step:height(T_adsb)
         r1 = sphere_utils_haversine_distance(params.radar2_lon, params.radar2_lat, t_lon, t_lat);
         Rg_true = r0 + r1;
         az_true = sphere_utils_azimuth(params.radar2_lon, params.radar2_lat, t_lon, t_lat);
-        Rg_meas = Rg_true + params.radar2_range_bias_m + randn() * params.range_noise_std_m;
-        az_meas = az_true + params.radar2_azimuth_bias_deg + randn() * params.azimuth_noise_std_deg;
+        Rg_meas = Rg_true + params.radar2_range_bias_m + randn() * params.radar2_range_noise_std_m;
+        az_meas = az_true + params.radar2_azimuth_bias_deg + randn() * params.radar2_azimuth_noise_std_deg;
         dr2_list(end+1) = Rg_meas - Rg_true;
         daz = az_meas - az_true;
         if daz > 180, daz = daz - 360; elseif daz < -180, daz = daz + 360; end
@@ -128,7 +128,8 @@ for k = 1:n_frames
         params.radar1_tx_lon, params.radar1_tx_lat, ...
         pos(1), pos(2), vel(1), vel(2), k, t1_grid(k), ...
         params.radar1_range_bias_m, params.radar1_azimuth_bias_deg, ...
-        params.radar1_beam_center_deg, params);
+        params.radar1_beam_center_deg, params, ...
+        params.radar1_range_noise_std_m, params.radar1_azimuth_noise_std_deg);
 
     % R2
     rng(params.random_seed + 10000 + k);
@@ -137,7 +138,8 @@ for k = 1:n_frames
         params.radar2_tx_lon, params.radar2_tx_lat, ...
         pos2(1), pos2(2), vel2(1), vel2(2), k, t2_grid(k), ...
         params.radar2_range_bias_m, params.radar2_azimuth_bias_deg, ...
-        params.radar2_beam_center_deg, params);
+        params.radar2_beam_center_deg, params, ...
+        params.radar2_range_noise_std_m, params.radar2_azimuth_noise_std_deg);
 end
 
 fprintf('原始点迹生成完成: R1共%d帧, R2共%d帧\n', n_frames, n_frames);
@@ -210,20 +212,34 @@ fprintf('偏差校正完成: R1=%d帧, R2=%d帧\n', n_frames, n_frames);
 %% ==================== Phase 5: 单目标航迹跟踪 ====================
 fprintf('\n========== Phase 5: 单目标航迹跟踪 ==========\n');
 
+% R1 UKF (精密站参数)
+params.ukf_range_std_m = params.radar1_range_noise_std_m;
+params.ukf_azimuth_std_deg = params.radar1_azimuth_noise_std_deg;
 ukf1_tpl = ukf_filter(params, params.radar1_lon, params.radar1_lat, ...
     params.radar1_tx_lon, params.radar1_tx_lat, params.dt_sec);
-ukf2_tpl = ukf_filter(params, params.radar2_lon, params.radar2_lat, ...
+
+% R2 params (普通站: 放宽门限和Q适配高噪声)
+params_r2 = params;
+params_r2.ukf_range_std_m = params.radar2_range_noise_std_m;
+params_r2.ukf_azimuth_std_deg = params.radar2_azimuth_noise_std_deg;
+params_r2.gate_sigma = 2.5;
+params_r2.ukf_Q_scale = 1.5e5;
+params_r2.ukf_P_pos_std = 0.5;
+params_r2.ukf_P_vel_std = 0.01;
+params_r2.tracker_M = 4;     % 高噪声下需更严格起始
+params_r2.tracker_N = 8;
+params_r2.tracker_K_loss = 10;
+
+ukf2_tpl = ukf_filter(params_r2, params.radar2_lon, params.radar2_lat, ...
     params.radar2_tx_lon, params.radar2_tx_lat, params.dt_sec);
 
-trackList_R1 = {};  tempPool_R1 = {};
-trackList_R2 = {};  tempPool_R2 = {};
+trackList_R1 = {};  trackList_R2 = {};
 trackSnapshots_R1 = cell(n_frames, 1);
 trackSnapshots_R2 = cell(n_frames, 1);
 
 ac_det_count_r1 = 0;  ac_det_count_r2 = 0;
 
 for k = 1:n_frames
-    % 检出统计
     for d = 1:length(detList_R1{k})
         if ~detList_R1{k}(d).is_clutter
             ac_det_count_r1 = ac_det_count_r1 + 1;
@@ -234,35 +250,22 @@ for k = 1:n_frames
             ac_det_count_r2 = ac_det_count_r2 + 1;
         end
     end
-
-    % 航迹管理 (multi_track_manager适用于任意数量目标)
-    [trackList_R1, tempPool_R1, trackSnapshots_R1{k}] = multi_track_manager(...
-        trackList_R1, tempPool_R1, detList_R1{k}, ukf1_tpl, params, k);
-    [trackList_R2, tempPool_R2, trackSnapshots_R2{k}] = multi_track_manager(...
-        trackList_R2, tempPool_R2, detList_R2{k}, ukf2_tpl, params, k);
 end
+
+% 单目标简化跟踪 (无M/N, 直接初始化)
+[trackSnapshots_R1, finalTrk1] = single_track_runner(detList_R1, ukf1_tpl, params, n_frames);
+[trackSnapshots_R2, finalTrk2] = single_track_runner(detList_R2, ukf2_tpl, params_r2, n_frames);
+trackList_R1 = {finalTrk1};
+trackList_R2 = {finalTrk2};
 
 fprintf('跟踪完成: %d 帧\n', n_frames);
 fprintf('  R1目标检出=%d, R2目标检出=%d\n', ac_det_count_r1, ac_det_count_r2);
 
 fprintf('\n--- 航迹统计 ---\n');
-fprintf('R1: 共产生 %d 条航迹\n', length(trackList_R1));
-for t = 1:length(trackList_R1)
-    trk = trackList_R1{t};
-    fprintf('  R1航迹#%d: type=%s quality=%d life=%d\n', ...
-        trk.id, get_type_str(trk.type), trk.quality, trk.life);
-end
-fprintf('R2: 共产生 %d 条航迹\n', length(trackList_R2));
-for t = 1:length(trackList_R2)
-    trk = trackList_R2{t};
-    fprintf('  R2航迹#%d: type=%s quality=%d life=%d\n', ...
-        trk.id, get_type_str(trk.type), trk.quality, trk.life);
-end
-
-% 提取活跃航迹 (单目标场景下各站应恰好1条RELIABLE)
-active_r1 = find_active_tracks(trackList_R1);
-active_r2 = find_active_tracks(trackList_R2);
-fprintf('R1活跃航迹: %d 条, R2活跃航迹: %d 条\n', length(active_r1), length(active_r2));
+fprintf('R1: type=%s quality=%d life=%d\n', ...
+    get_type_str(finalTrk1.type), finalTrk1.quality, finalTrk1.life);
+fprintf('R2: type=%s quality=%d life=%d\n', ...
+    get_type_str(finalTrk2.type), finalTrk2.quality, finalTrk2.life);
 
 %% ==================== Phase 6: 航迹级时间对齐 ====================
 fprintf('\n========== Phase 6: 航迹级时间对齐 ==========\n');
@@ -274,18 +277,9 @@ fprintf('R2航迹时间对齐完成\n');
 %% ==================== Phase 7: 航迹融合 ====================
 fprintf('\n========== Phase 7: 航迹融合 (四种算法) ==========\n');
 
-% 单目标: 直接1对1融合, 无需匹配
-% 选取R1和R2各1条最佳活跃航迹
-if isempty(active_r1) || isempty(active_r2)
-    error('无可融合的活跃航迹! R1=%d条, R2=%d条', length(active_r1), length(active_r2));
-end
-
-% 选life最长的活跃航迹
-[~, best_r1] = max(arrayfun(@(i) trackList_R1{i}.life, active_r1));
-[~, best_r2] = max(arrayfun(@(i) trackList_R2{i}.life, active_r2));
-r1_id = trackList_R1{active_r1(best_r1)}.id;
-r2_id = trackList_R2{active_r2(best_r2)}.id;
-fprintf('融合对: R1#%d <-> R2#%d (直接1对1)\n', r1_id, r2_id);
+% 单目标: 直接1对1融合, 各站严格1条航迹 (ID=1)
+r1_id = 1; r2_id = 1;
+fprintf('融合对: R1#1 <-> R2#1 (直接1对1)\n');
 
 % 构建单对匹配
 matched_pair = struct('R1_track_id', r1_id, 'R2_track_id', r2_id, ...
@@ -366,8 +360,8 @@ rms_vals = arrayfun(@(x) x.s.rms, fusion_eval.overall(1:4));
 r1_rmse = fusion_eval.overall(5).s.rms;
 r2_rmse = fusion_eval.overall(6).s.rms;
 fprintf('\n最佳融合算法: %s (RMSE=%.1fkm)\n', method_names{best_m}, best_fusion_rmse);
-fprintf('融合 vs 最佳单站: %.1f%% 改善\n', ...
-    (1 - best_fusion_rmse/min(r1_rmse, r2_rmse))*100);
+fprintf('融合 vs R1(精密站): %+.1f%%\n', (1 - best_fusion_rmse/r1_rmse)*100);
+fprintf('融合 vs R2(普通站): %+.1f%% 改善\n', (1 - best_fusion_rmse/r2_rmse)*100);
 
 % 单站跟踪误差 (时间对齐后评估)
 aligned_R2_eval = time_align_tracks(trackSnapshots_R2, params);
@@ -420,8 +414,10 @@ sysPara = struct(...
     'range_km', [params.range_min_km, params.range_max_km], ...
     'detection_probability', params.detection_probability, ...
     'false_alarm_rate', params.false_alarm_rate, ...
-    'range_noise_std_m', params.range_noise_std_m, ...
-    'azimuth_noise_std_deg', params.azimuth_noise_std_deg, ...
+    'radar1_range_noise_m', params.radar1_range_noise_std_m, ...
+    'radar1_az_noise_deg', params.radar1_azimuth_noise_std_deg, ...
+    'radar2_range_noise_m', params.radar2_range_noise_std_m, ...
+    'radar2_az_noise_deg', params.radar2_azimuth_noise_std_deg, ...
     'radial_vel_noise_std_ms', params.radial_vel_noise_std_ms, ...
     'random_seed', params.random_seed);
 
@@ -433,11 +429,11 @@ calibResult = struct(...
     'n_cal_R1', length(dr1_list), 'n_cal_R2', length(dr2_list));
 
 R1 = struct('detRaw', {detRaw_R1}, 'detList', {detList_R1}, ...
-    'trackSnapshots', {trackSnapshots_R1}, 'finalTrackList', {trackList_R1}, ...
-    'tempTrackList', {tempPool_R1}, 'targetDetCount', ac_det_count_r1);
+    'trackSnapshots', {trackSnapshots_R1}, 'finalTrack', finalTrk1, ...
+    'targetDetCount', ac_det_count_r1);
 R2 = struct('detRaw', {detRaw_R2}, 'detList', {detList_R2}, ...
-    'trackSnapshots', {trackSnapshots_R2}, 'finalTrackList', {trackList_R2}, ...
-    'tempTrackList', {tempPool_R2}, 'targetDetCount', ac_det_count_r2);
+    'trackSnapshots', {trackSnapshots_R2}, 'finalTrack', finalTrk2, ...
+    'targetDetCount', ac_det_count_r2);
 
 outf = fullfile('results', sprintf('simulation_%s.mat', datestr(now, 'yyyymmdd_HHMMSS')));
 save(outf, 'sysPara', 'calibResult', 'truthTraj', 'R1', 'R2', 'params', ...
@@ -464,6 +460,15 @@ function idx = find_active_tracks(trackList)
     idx = [];
     for t = 1:length(trackList)
         if trackList{t}.type ~= 7
+            idx(end+1) = t;
+        end
+    end
+end
+
+function idx = find_reliable(trackList)
+    idx = [];
+    for t = 1:length(trackList)
+        if trackList{t}.type == 1
             idx(end+1) = t;
         end
     end

@@ -5,7 +5,11 @@
 
 function [detList, has_target_det] = generate_frame_detections(rx_lon, rx_lat, ...
         tx_lon, tx_lat, tgt_lon, tgt_lat, tgt_lon_rate, tgt_lat_rate, ...
-        frameID, time_sec, range_bias, az_bias, beam_center, params)
+        frameID, time_sec, range_bias, az_bias, beam_center, params, ...
+        range_noise, az_noise)
+
+    if nargin < 16, range_noise = params.radar1_range_noise_std_m; end
+    if nargin < 17, az_noise = params.radar1_azimuth_noise_std_deg; end
 
     detList = [];
     has_target_det = false;
@@ -28,8 +32,8 @@ function [detList, has_target_det] = generate_frame_detections(rx_lon, rx_lat, .
             rv_rx = sphere_utils_radial_velocity(tgt_lon_rate, tgt_lat_rate, tgt_lat, az_true);
             vd_true = rv_tx + rv_rx;
 
-            Rg_meas = Rg_true + range_bias + randn() * params.range_noise_std_m;
-            az_meas = az_true + az_bias + randn() * params.azimuth_noise_std_deg;
+            Rg_meas = Rg_true + range_bias + randn() * range_noise;
+            az_meas = az_true + az_bias + randn() * az_noise;
             vd_meas = vd_true + randn() * params.radial_vel_noise_std_ms;
 
             det = struct('frameID', frameID, 'time_sec', time_sec, ...
