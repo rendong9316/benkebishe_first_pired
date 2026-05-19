@@ -1,16 +1,21 @@
 % =========================================================================
 % run_simulation.m
-% 双基地外辐射源雷达逐帧仿真主程序
+% 双基地外辐射源雷达单目标逐帧仿真主程序
 % =========================================================================
-% 流程:
-%   Phase 0: 场景初始化（参数、航迹）
-%   Phase 1: 系统偏差离线标定（标校点 -> LS估计）
-%   Phase 2: 逐帧主循环（点迹生成 -> 偏差校正 -> 跟踪处理）
-%   Phase 3: 可视化 + 数据输出
+% Phase 0: 场景初始化（单机航迹 + 覆盖检查）
+% Phase 1: 系统偏差离线标定
+% Phase 2: 原始点迹生成（含偏差，不做校正）
+% Phase 3: 时间对齐策略（航迹级，延后到匹配前）
+% Phase 4: 偏差校正（几何反解）
+% Phase 5: 单目标航迹跟踪（UKF+PDA+模糊自适应Q）
+% Phase 6: 航迹级时间对齐（R2→R1时间网格）
+% Phase 7: 航迹融合（SCC/BC/CI/FCI，直接1对1）
+% Phase 8: 定量误差评估（融合 + 单站）
+% Phase 9: 可视化 + 数据保存
 % =========================================================================
 
 clear; close all; clc;
-addpath('config', 'utils', 'simulation', 'registration', 'ukf', 'fusion', 'visualization', 'io');
+addpath(genpath('.'));
 
 %% ==================== Phase 0: 场景初始化 ====================
 fprintf('========== Phase 0: 场景初始化 ==========\n');
@@ -18,13 +23,14 @@ fprintf('========== Phase 0: 场景初始化 ==========\n');
 params = simulation_params();
 rng(params.random_seed);
 
-% 生成真实航迹
+% 单机航迹生成
 traj = aircraft_trajectory_create(params.aircraft_waypoints, ...
     params.aircraft_speed_ms, params.dt_sec);
 true_track = aircraft_trajectory_generate(traj);
-fprintf('真实航迹: %d 点, 总时长 %.0f s\n', size(true_track, 1), traj.duration_sec);
+fprintf('真实航迹: %d 点, 总时长 %.0f s, 速度 %.0f m/s\n', ...
+    size(true_track,1), traj.duration_sec, params.aircraft_speed_ms);
 
-% 检查航迹在双方威力范围内的覆盖
+% 覆盖检查
 n_in_r1 = 0; n_in_r2 = 0;
 for i = 1:size(true_track, 1)
     [in1, ~, ~] = radar_coverage_check(params.radar1_lon, params.radar1_lat, ...
@@ -37,27 +43,37 @@ end
 fprintf('  在R1威力内: %d 点, 在R2威力内: %d 点 (共%d点)\n', ...
     n_in_r1, n_in_r2, size(true_track,1));
 
-% 构建采样时间网格
+% 时间网格
 t1_grid = params.time_offset_radar1_sec : params.dt_sec : traj.duration_sec;
 t2_grid = params.time_offset_radar2_sec : params.dt_sec : traj.duration_sec;
 n_frames = min(length(t1_grid), length(t2_grid));
 fprintf('仿真帧数: %d (dt=%.0fs)\n', n_frames, params.dt_sec);
 
-%% ==================== Phase 1: 系统偏差离线标定 ====================
-fprintf('\n========== Phase 1: 系统偏差标定 ==========\n');
+% 真值结构体 (用于误差评估)
+tt = true_track;
+truthTraj = struct('label', 'A', 'speed_ms', params.aircraft_speed_ms, ...
+    'time_sec', tt(:,5), 'lat', tt(:,2), 'lon', tt(:,1), ...
+    'lon_rate', tt(:,3), 'lat_rate', tt(:,4));
 
-rng(params.random_seed);  % 标定使用独立随机流
+%% ==================== Phase 1: ADS-B系统偏差标定 ====================
+fprintf('\n========== Phase 1: ADS-B系统偏差标定 ==========\n');
 
-n_cal = min(30, size(true_track, 1));
-cal_step = max(1, floor(size(true_track, 1) / n_cal));
-cal_idxs = 1:cal_step:size(true_track, 1);
-cal_idxs = cal_idxs(1:min(n_cal, length(cal_idxs)));
+rng(params.random_seed);
+
+fprintf('加载ADS-B合作目标: %s\n', params.adsb_csv_path);
+T_adsb = readtable(params.adsb_csv_path, 'ReadVariableNames', false);
+adsb_lat = T_adsb.Var2;
+adsb_lon = T_adsb.Var3;
 
 dr1_list = []; da1_list = [];
 dr2_list = []; da2_list = [];
 
-for idx = cal_idxs
-    t_lon = true_track(idx,1);  t_lat = true_track(idx,2);
+n_check = min(5000, height(T_adsb));
+cal_step = max(1, floor(height(T_adsb) / n_check));
+
+for idx = 1:cal_step:height(T_adsb)
+    t_lon = adsb_lon(idx);  t_lat = adsb_lat(idx);
+    if isnan(t_lon) || isnan(t_lat), continue; end
 
     [in1, ~, ~] = radar_coverage_check(params.radar1_lon, params.radar1_lat, ...
         t_lon, t_lat, params.radar1_beam_center_deg, params);
@@ -92,159 +108,341 @@ end
 
 dr1_est = mean(dr1_list);  da1_est = mean(da1_list);
 dr2_est = mean(dr2_list);  da2_est = mean(da2_list);
-fprintf('标校点数: R1=%d, R2=%d\n', length(dr1_list), length(dr2_list));
+fprintf('ADS-B标校点数: R1=%d, R2=%d\n', length(dr1_list), length(dr2_list));
 fprintf('R1: dr_est=%.1f (true=%.0f) m, da_est=%.4f (true=%.1f) deg\n', ...
     dr1_est, params.radar1_range_bias_m, da1_est, params.radar1_azimuth_bias_deg);
 fprintf('R2: dr_est=%.1f (true=%.0f) m, da_est=%.4f (true=%.1f) deg\n', ...
     dr2_est, params.radar2_range_bias_m, da2_est, params.radar2_azimuth_bias_deg);
 
-%% ==================== Phase 2: 逐帧主循环 ====================
-fprintf('\n========== Phase 2: 逐帧主循环 ==========\n');
+%% ==================== Phase 2: 原始点迹生成 ====================
+fprintf('\n========== Phase 2: 原始点迹生成 ==========\n');
 
-% 预分配
+detRaw_R1 = cell(n_frames, 1);
+detRaw_R2 = cell(n_frames, 1);
+
+for k = 1:n_frames
+    % R1
+    rng(params.random_seed + k);
+    [pos, vel] = aircraft_trajectory_interpolate(traj, t1_grid(k));
+    detRaw_R1{k} = generate_frame_detections(params.radar1_lon, params.radar1_lat, ...
+        params.radar1_tx_lon, params.radar1_tx_lat, ...
+        pos(1), pos(2), vel(1), vel(2), k, t1_grid(k), ...
+        params.radar1_range_bias_m, params.radar1_azimuth_bias_deg, ...
+        params.radar1_beam_center_deg, params);
+
+    % R2
+    rng(params.random_seed + 10000 + k);
+    [pos2, vel2] = aircraft_trajectory_interpolate(traj, t2_grid(k));
+    detRaw_R2{k} = generate_frame_detections(params.radar2_lon, params.radar2_lat, ...
+        params.radar2_tx_lon, params.radar2_tx_lat, ...
+        pos2(1), pos2(2), vel2(1), vel2(2), k, t2_grid(k), ...
+        params.radar2_range_bias_m, params.radar2_azimuth_bias_deg, ...
+        params.radar2_beam_center_deg, params);
+end
+
+fprintf('原始点迹生成完成: R1共%d帧, R2共%d帧\n', n_frames, n_frames);
+
+%% ==================== Phase 3: 时间对齐策略 ====================
+fprintf('\n========== Phase 3: 时间对齐策略 ==========\n');
+fprintf('R1采样: 0s/30s/60s/...  R2采样: 13s/43s/73s/...  偏移=%ds\n', ...
+    params.time_offset_radar2_sec);
+fprintf('策略: 点迹不做对齐, 两部雷达各自在原时间网格上滤波跟踪\n');
+fprintf('      航迹级对齐延后到 Phase 6 融合前, 用 CV 模型全状态外推\n');
+
+%% ==================== Phase 4: 偏差校正 + 几何反解 ====================
+fprintf('\n========== Phase 4: 偏差校正 ==========\n');
+
 detList_R1 = cell(n_frames, 1);
 detList_R2 = cell(n_frames, 1);
-trackState_R1 = cell(n_frames, 1);
-trackState_R2 = cell(n_frames, 1);
 
-% UKF 模板
+for k = 1:n_frames
+    % R1: 偏差校正
+    dets_r1 = detRaw_R1{k};
+    for d = 1:length(dets_r1)
+        Rgc = dets_r1(d).prange - dr1_est;
+        azc = dets_r1(d).paz - da1_est;
+        dets_r1(d).drange = Rgc;
+        dets_r1(d).daz = azc;
+        dets_r1(d).range_meas = Rgc;
+        dets_r1(d).azimuth_meas = azc;
+        if ~(isfield(dets_r1(d), 'lat') && ~isnan(dets_r1(d).lat))
+            [~, lat_e, lon_e] = bistatic_inverse_solver(Rgc, azc, ...
+                params.radar1_tx_lon, params.radar1_tx_lat, ...
+                params.radar1_lon, params.radar1_lat);
+            dets_r1(d).lat = lat_e;
+            dets_r1(d).lon = lon_e;
+        end
+        [~, raw_lat, raw_lon] = bistatic_inverse_solver(dets_r1(d).prange, dets_r1(d).paz, ...
+            params.radar1_tx_lon, params.radar1_tx_lat, ...
+            params.radar1_lon, params.radar1_lat);
+        dets_r1(d).raw_lat = raw_lat;
+        dets_r1(d).raw_lon = raw_lon;
+    end
+    detList_R1{k} = dets_r1;
+
+    % R2: 偏差校正
+    dets_r2 = detRaw_R2{k};
+    for d = 1:length(dets_r2)
+        Rgc = dets_r2(d).prange - dr2_est;
+        azc = dets_r2(d).paz - da2_est;
+        dets_r2(d).drange = Rgc;
+        dets_r2(d).daz = azc;
+        dets_r2(d).range_meas = Rgc;
+        dets_r2(d).azimuth_meas = azc;
+        if ~(isfield(dets_r2(d), 'lat') && ~isnan(dets_r2(d).lat))
+            [~, lat_e, lon_e] = bistatic_inverse_solver(Rgc, azc, ...
+                params.radar2_tx_lon, params.radar2_tx_lat, ...
+                params.radar2_lon, params.radar2_lat);
+            dets_r2(d).lat = lat_e;
+            dets_r2(d).lon = lon_e;
+        end
+        [~, raw_lat, raw_lon] = bistatic_inverse_solver(dets_r2(d).prange, dets_r2(d).paz, ...
+            params.radar2_tx_lon, params.radar2_tx_lat, ...
+            params.radar2_lon, params.radar2_lat);
+        dets_r2(d).raw_lat = raw_lat;
+        dets_r2(d).raw_lon = raw_lon;
+    end
+    detList_R2{k} = dets_r2;
+end
+
+fprintf('偏差校正完成: R1=%d帧, R2=%d帧\n', n_frames, n_frames);
+
+%% ==================== Phase 5: 单目标航迹跟踪 ====================
+fprintf('\n========== Phase 5: 单目标航迹跟踪 ==========\n');
+
 ukf1_tpl = ukf_filter(params, params.radar1_lon, params.radar1_lat, ...
     params.radar1_tx_lon, params.radar1_tx_lat, params.dt_sec);
 ukf2_tpl = ukf_filter(params, params.radar2_lon, params.radar2_lat, ...
     params.radar2_tx_lon, params.radar2_tx_lat, params.dt_sec);
 
-% 航迹状态初始化
-trk1 = init_track_state();
-trk2 = init_track_state();
+trackList_R1 = {};  tempPool_R1 = {};
+trackList_R2 = {};  tempPool_R2 = {};
+trackSnapshots_R1 = cell(n_frames, 1);
+trackSnapshots_R2 = cell(n_frames, 1);
+
+ac_det_count_r1 = 0;  ac_det_count_r2 = 0;
 
 for k = 1:n_frames
-    % R1随机流
-    rng(params.random_seed + k);
-
-    % 目标真实位置
-    [pos, vel] = aircraft_trajectory_interpolate(traj, t1_grid(k));
-
-    % ---- R1 点迹生成 + 偏差校正 ----
-    det_r1 = generate_frame_detections(params.radar1_lon, params.radar1_lat, ...
-        params.radar1_tx_lon, params.radar1_tx_lat, ...
-        pos(1), pos(2), vel(1), vel(2), k, t1_grid(k), ...
-        params.radar1_range_bias_m, params.radar1_azimuth_bias_deg, ...
-        params.radar1_beam_center_deg, params);
-    for d = 1:length(det_r1)
-        Rgc = det_r1(d).prange - dr1_est;
-        azc = det_r1(d).paz - da1_est;
-        det_r1(d).drange = Rgc;
-        det_r1(d).daz = azc;
-        det_r1(d).range_meas = Rgc;
-        det_r1(d).azimuth_meas = azc;
-        % 杂波已在(r1,az)空间预设计算好地理坐标，跳过反解
-        if isfield(det_r1(d), 'lat') && ~isnan(det_r1(d).lat)
-            % lat/lon already set
-        else
-            [~, lat_e, lon_e] = bistatic_inverse_solver(Rgc, azc, ...
-                params.radar1_tx_lon, params.radar1_tx_lat, ...
-                params.radar1_lon, params.radar1_lat);
-            det_r1(d).lat = lat_e;
-            det_r1(d).lon = lon_e;
+    % 检出统计
+    for d = 1:length(detList_R1{k})
+        if ~detList_R1{k}(d).is_clutter
+            ac_det_count_r1 = ac_det_count_r1 + 1;
         end
-        % 计算原始（校准前）地理位置，用于对比显示偏差配准效果
-        [~, raw_lat, raw_lon] = bistatic_inverse_solver(det_r1(d).prange, det_r1(d).paz, ...
-            params.radar1_tx_lon, params.radar1_tx_lat, ...
-            params.radar1_lon, params.radar1_lat);
-        det_r1(d).raw_lat = raw_lat;
-        det_r1(d).raw_lon = raw_lon;
     end
-    detList_R1{k} = det_r1;
-
-    % ---- R1 跟踪 ----
-    [trk1, trackState_R1{k}] = process_one_frame(trk1, det_r1, ukf1_tpl, params, k, ...
-        params.radar1_beam_center_deg);
-
-    % ---- R2 点迹生成 + 偏差校正 ----
-    rng(params.random_seed + 10000 + k);
-    [pos2, vel2] = aircraft_trajectory_interpolate(traj, t2_grid(k));
-
-    det_r2 = generate_frame_detections(params.radar2_lon, params.radar2_lat, ...
-        params.radar2_tx_lon, params.radar2_tx_lat, ...
-        pos2(1), pos2(2), vel2(1), vel2(2), k, t2_grid(k), ...
-        params.radar2_range_bias_m, params.radar2_azimuth_bias_deg, ...
-        params.radar2_beam_center_deg, params);
-    for d = 1:length(det_r2)
-        Rgc = det_r2(d).prange - dr2_est;
-        azc = det_r2(d).paz - da2_est;
-        det_r2(d).drange = Rgc;
-        det_r2(d).daz = azc;
-        det_r2(d).range_meas = Rgc;
-        det_r2(d).azimuth_meas = azc;
-        % 杂波已在(r1,az)空间预设计算好地理坐标，跳过反解
-        if isfield(det_r2(d), 'lat') && ~isnan(det_r2(d).lat)
-            % lat/lon already set
-        else
-            [~, lat_e, lon_e] = bistatic_inverse_solver(Rgc, azc, ...
-                params.radar2_tx_lon, params.radar2_tx_lat, ...
-                params.radar2_lon, params.radar2_lat);
-            det_r2(d).lat = lat_e;
-            det_r2(d).lon = lon_e;
+    for d = 1:length(detList_R2{k})
+        if ~detList_R2{k}(d).is_clutter
+            ac_det_count_r2 = ac_det_count_r2 + 1;
         end
-        % 计算原始（校准前）地理位置，用于对比显示偏差配准效果
-        [~, raw_lat, raw_lon] = bistatic_inverse_solver(det_r2(d).prange, det_r2(d).paz, ...
-            params.radar2_tx_lon, params.radar2_tx_lat, ...
-            params.radar2_lon, params.radar2_lat);
-        det_r2(d).raw_lat = raw_lat;
-        det_r2(d).raw_lon = raw_lon;
     end
-    detList_R2{k} = det_r2;
 
-    % ---- R2 跟踪 ----
-    [trk2, trackState_R2{k}] = process_one_frame(trk2, det_r2, ukf2_tpl, params, k, ...
-        params.radar2_beam_center_deg);
+    % 航迹管理 (multi_track_manager适用于任意数量目标)
+    [trackList_R1, tempPool_R1, trackSnapshots_R1{k}] = multi_track_manager(...
+        trackList_R1, tempPool_R1, detList_R1{k}, ukf1_tpl, params, k);
+    [trackList_R2, tempPool_R2, trackSnapshots_R2{k}] = multi_track_manager(...
+        trackList_R2, tempPool_R2, detList_R2{k}, ukf2_tpl, params, k);
 end
 
-fprintf('仿真完成: %d 帧处理完毕\n', n_frames);
+fprintf('跟踪完成: %d 帧\n', n_frames);
+fprintf('  R1目标检出=%d, R2目标检出=%d\n', ac_det_count_r1, ac_det_count_r2);
 
-%% ==================== Phase 3: 统计 ====================
-fprintf('\n========== Phase 3: 统计 ==========\n');
-% 统计
-s1 = compute_stats(detList_R1, true_track, t1_grid, params, 'R1');
-s2 = compute_stats(detList_R2, true_track, t2_grid, params, 'R2');
+fprintf('\n--- 航迹统计 ---\n');
+fprintf('R1: 共产生 %d 条航迹\n', length(trackList_R1));
+for t = 1:length(trackList_R1)
+    trk = trackList_R1{t};
+    fprintf('  R1航迹#%d: type=%s quality=%d life=%d\n', ...
+        trk.id, get_type_str(trk.type), trk.quality, trk.life);
+end
+fprintf('R2: 共产生 %d 条航迹\n', length(trackList_R2));
+for t = 1:length(trackList_R2)
+    trk = trackList_R2{t};
+    fprintf('  R2航迹#%d: type=%s quality=%d life=%d\n', ...
+        trk.id, get_type_str(trk.type), trk.quality, trk.life);
+end
 
-% 滤波航迹有效帧数
-n_filt1 = count_valid_frames(trackState_R1);
-n_filt2 = count_valid_frames(trackState_R2);
-fprintf('R1: 总点迹=%d, 目标检出=%d, 虚警=%d, 滤波有效帧=%d\n', ...
-    s1.total, s1.target, s1.false, n_filt1);
-fprintf('R2: 总点迹=%d, 目标检出=%d, 虚警=%d, 滤波有效帧=%d\n', ...
-    s2.total, s2.target, s2.false, n_filt2);
+% 提取活跃航迹 (单目标场景下各站应恰好1条RELIABLE)
+active_r1 = find_active_tracks(trackList_R1);
+active_r2 = find_active_tracks(trackList_R2);
+fprintf('R1活跃航迹: %d 条, R2活跃航迹: %d 条\n', length(active_r1), length(active_r2));
 
-%% ==================== Phase 4: 可视化 ====================
-fprintf('\n========== Phase 4: 可视化 ==========\n');
+%% ==================== Phase 6: 航迹级时间对齐 ====================
+fprintf('\n========== Phase 6: 航迹级时间对齐 ==========\n');
+fprintf('将R2航迹 (t2_grid) 用CV模型全状态外推到R1时间网格 (t1_grid)\n');
+
+aligned_R2 = time_align_tracks(trackSnapshots_R2, params);
+fprintf('R2航迹时间对齐完成\n');
+
+%% ==================== Phase 7: 航迹融合 ====================
+fprintf('\n========== Phase 7: 航迹融合 (四种算法) ==========\n');
+
+% 单目标: 直接1对1融合, 无需匹配
+% 选取R1和R2各1条最佳活跃航迹
+if isempty(active_r1) || isempty(active_r2)
+    error('无可融合的活跃航迹! R1=%d条, R2=%d条', length(active_r1), length(active_r2));
+end
+
+% 选life最长的活跃航迹
+[~, best_r1] = max(arrayfun(@(i) trackList_R1{i}.life, active_r1));
+[~, best_r2] = max(arrayfun(@(i) trackList_R2{i}.life, active_r2));
+r1_id = trackList_R1{active_r1(best_r1)}.id;
+r2_id = trackList_R2{active_r2(best_r2)}.id;
+fprintf('融合对: R1#%d <-> R2#%d (直接1对1)\n', r1_id, r2_id);
+
+% 构建单对匹配
+matched_pair = struct('R1_track_id', r1_id, 'R2_track_id', r2_id, ...
+    'match_count', 0, 'coexist_count', 0, 'match_ratio', 1.0, ...
+    'mean_dist_km', 0, 'quality', 100);
+
+method_names = {'SCC', 'BC', 'CI', 'FCI'};
+all_fused_snapshots = cell(length(method_names), 1);
+
+for m = 1:length(method_names)
+    method = method_names{m};
+    fprintf('  运行 %s 融合...\n', method);
+    all_fused_snapshots{m} = run_track_fusion(matched_pair, ...
+        trackSnapshots_R1, aligned_R2, params, method);
+end
+fprintf('融合完成: %d 种算法\n', length(method_names));
+
+%% ==================== Phase 8: 定量误差评估 ====================
+fprintf('\n========== Phase 8: 定量误差评估 ==========\n');
+
+% 构建matcher结构体 (用于evaluate_fusion, 简化版)
+n_frames_val = n_frames;
+matcher_simple = struct();
+matcher_simple.matched_pairs = matched_pair;
+matcher_simple.aligned_R2 = aligned_R2;
+matcher_simple.r1_ids = r1_id;
+matcher_simple.r2_ids = r2_id;
+
+% 提取R1航迹位置历史 (用于evaluate_fusion)
+r1_pos = nan(1, n_frames, 2);
+for k = 1:n_frames
+    snap = trackSnapshots_R1{k};
+    if ~isempty(snap.trackList)
+        for t = 1:length(snap.trackList)
+            if snap.trackList{t}.id == r1_id
+                r1_pos(1, k, 1) = snap.trackList{t}.lon;
+                r1_pos(1, k, 2) = snap.trackList{t}.lat;
+                break;
+            end
+        end
+    end
+end
+matcher_simple.r1_pos = r1_pos;
+
+r2_pos = nan(1, n_frames, 2);
+for k = 1:n_frames
+    snap = aligned_R2{k};
+    if ~isempty(snap.trackList)
+        for t = 1:length(snap.trackList)
+            if snap.trackList{t}.id == r2_id
+                r2_pos(1, k, 1) = snap.trackList{t}.lon;
+                r2_pos(1, k, 2) = snap.trackList{t}.lat;
+                break;
+            end
+        end
+    end
+end
+matcher_simple.r2_pos = r2_pos;
+
+% 融合误差评估 (用evaluate_fusion, 传入单目标真值)
+truthTrajs = {truthTraj};
+fusion_eval = evaluate_fusion(all_fused_snapshots, method_names, ...
+    matched_pair, trackSnapshots_R1, trackSnapshots_R2, ...
+    truthTrajs, n_frames, params.dt_sec, matcher_simple);
+
+% 打印融合 vs 单站对比表
+fprintf('\n--- 融合误差对比 (RMSE km) ---\n');
+fprintf('%-8s %8s %8s\n', '算法', 'RMSE', '中位');
+fprintf('%-8s %8s %8s\n', '------', '------', '------');
+all_method_labels = [method_names, {'R1_only', 'R2_only'}];
+for m = 1:length(all_method_labels)
+    s = fusion_eval.overall(m).s;
+    fprintf('%-8s %8.1f %8.1f\n', all_method_labels{m}, s.rms, s.median);
+end
+
+rms_vals = arrayfun(@(x) x.s.rms, fusion_eval.overall(1:4));
+[best_fusion_rmse, best_m] = min(rms_vals);
+r1_rmse = fusion_eval.overall(5).s.rms;
+r2_rmse = fusion_eval.overall(6).s.rms;
+fprintf('\n最佳融合算法: %s (RMSE=%.1fkm)\n', method_names{best_m}, best_fusion_rmse);
+fprintf('融合 vs 最佳单站: %.1f%% 改善\n', ...
+    (1 - best_fusion_rmse/min(r1_rmse, r2_rmse))*100);
+
+% 单站跟踪误差 (时间对齐后评估)
+aligned_R2_eval = time_align_tracks(trackSnapshots_R2, params);
+errorStats_R1 = compute_tracking_errors(trackSnapshots_R1, detList_R1, ...
+    truthTrajs, n_frames, params.dt_sec, 'R1');
+errorStats_R2 = compute_tracking_errors(aligned_R2_eval, detList_R2, ...
+    truthTrajs, n_frames, params.dt_sec, 'R2');
+
+for es = {errorStats_R1, errorStats_R2}
+    e = es{1};
+    fprintf('\n--- %s UKF滤波误差 ---\n', e.radar);
+    fprintf('%-6s %6s %8s %8s %8s %8s %8s\n', ...
+        '飞机', '点数', '中位(km)', '均值(km)', 'RMSE(km)', '95%(km)', 'vs检测');
+    s_u = e.summary(1).ukf;
+    fprintf('飞机A   %6d %8.1f %8.1f %8.1f %8.1f %7.0f%%\n', ...
+        s_u.n, s_u.median, s_u.mean, s_u.rms, s_u.pct95, ...
+        e.summary(1).ukf_vs_det_pct);
+end
+
+%% ==================== Phase 9: 可视化 + 数据保存 ====================
+fprintf('\n========== Phase 9: 可视化 ==========\n');
 if ~exist('results', 'dir'), mkdir('results'); end
 
 plot_scene_overview(true_track, params, 'results');
 plot_point_cloud_3d(detList_R1, 'R1', 'results/fig2a_R1_point_cloud.png');
 plot_point_cloud_3d(detList_R2, 'R2', 'results/fig2b_R2_point_cloud.png');
-plot_combined_tracks(true_track, detList_R1, detList_R2, ...
-    trackState_R1, trackState_R2, params, 'results');
-plot_error_timeline(trackState_R1, trackState_R2, detList_R1, detList_R2, ...
-    true_track, t1_grid, t2_grid, params, 'results');
 
-%% ==================== Phase 5: 数据保存 ====================
-fprintf('\n========== Phase 5: 数据保存 ==========\n');
+% 单目标跟踪综合图
+plot_single_track_result(true_track, detList_R1, detList_R2, ...
+    trackSnapshots_R1, trackSnapshots_R2, params, 'results');
 
-calib = struct('dr1_est', dr1_est, 'da1_est', da1_est, ...
+% 融合可视化
+plot_single_fusion_result(true_track, trackSnapshots_R1, trackSnapshots_R2, ...
+    all_fused_snapshots, method_names, best_m, fusion_eval, truthTraj, params, 'results');
+
+fprintf('\n========== Phase 9: 数据保存 ==========\n');
+sysPara = struct(...
+    'dt_sec', params.dt_sec, 'n_frames', n_frames, ...
+    'R1_lon', params.radar1_lon, 'R1_lat', params.radar1_lat, ...
+    'R1_tx_lon', params.radar1_tx_lon, 'R1_tx_lat', params.radar1_tx_lat, ...
+    'R1_beam_center_deg', params.radar1_beam_center_deg, ...
+    'R1_range_bias_m', params.radar1_range_bias_m, ...
+    'R1_azimuth_bias_deg', params.radar1_azimuth_bias_deg, ...
+    'R2_lon', params.radar2_lon, 'R2_lat', params.radar2_lat, ...
+    'R2_tx_lon', params.radar2_tx_lon, 'R2_tx_lat', params.radar2_tx_lat, ...
+    'R2_beam_center_deg', params.radar2_beam_center_deg, ...
+    'R2_range_bias_m', params.radar2_range_bias_m, ...
+    'R2_azimuth_bias_deg', params.radar2_azimuth_bias_deg, ...
+    'beam_width_deg', params.beam_width_deg, ...
+    'range_km', [params.range_min_km, params.range_max_km], ...
+    'detection_probability', params.detection_probability, ...
+    'false_alarm_rate', params.false_alarm_rate, ...
+    'range_noise_std_m', params.range_noise_std_m, ...
+    'azimuth_noise_std_deg', params.azimuth_noise_std_deg, ...
+    'radial_vel_noise_std_ms', params.radial_vel_noise_std_ms, ...
+    'random_seed', params.random_seed);
+
+calibResult = struct(...
+    'dr1_est', dr1_est, 'da1_est', da1_est, ...
     'dr2_est', dr2_est, 'da2_est', da2_est, ...
     'dr1_true', params.radar1_range_bias_m, 'da1_true', params.radar1_azimuth_bias_deg, ...
-    'dr2_true', params.radar2_range_bias_m, 'da2_true', params.radar2_azimuth_bias_deg);
-scene = struct('R1_lon', params.radar1_lon, 'R1_lat', params.radar1_lat, ...
-    'R2_lon', params.radar2_lon, 'R2_lat', params.radar2_lat, ...
-    'Tx1_lon', params.radar1_tx_lon, 'Tx1_lat', params.radar1_tx_lat, ...
-    'Tx2_lon', params.radar2_tx_lon, 'Tx2_lat', params.radar2_tx_lat);
-truth = struct('time_sec', true_track(:,5), 'lat', true_track(:,2), ...
-    'lon', true_track(:,1), 'lon_rate', true_track(:,3), 'lat_rate', true_track(:,4));
+    'dr2_true', params.radar2_range_bias_m, 'da2_true', params.radar2_azimuth_bias_deg, ...
+    'n_cal_R1', length(dr1_list), 'n_cal_R2', length(dr2_list));
+
+R1 = struct('detRaw', {detRaw_R1}, 'detList', {detList_R1}, ...
+    'trackSnapshots', {trackSnapshots_R1}, 'finalTrackList', {trackList_R1}, ...
+    'tempTrackList', {tempPool_R1}, 'targetDetCount', ac_det_count_r1);
+R2 = struct('detRaw', {detRaw_R2}, 'detList', {detList_R2}, ...
+    'trackSnapshots', {trackSnapshots_R2}, 'finalTrackList', {trackList_R2}, ...
+    'tempTrackList', {tempPool_R2}, 'targetDetCount', ac_det_count_r2);
 
 outf = fullfile('results', sprintf('simulation_%s.mat', datestr(now, 'yyyymmdd_HHMMSS')));
-save(outf, 'detList_R1', 'detList_R2', 'trackState_R1', 'trackState_R2', ...
-    'calib', 'scene', 'truth', 'params', 's1', 's2');
+save(outf, 'sysPara', 'calibResult', 'truthTraj', 'R1', 'R2', 'params', ...
+    'errorStats_R1', 'errorStats_R2', 'fusion_eval', ...
+    'all_fused_snapshots', 'method_names');
 fprintf('数据已保存: %s\n', outf);
 fprintf('\nDone.\n');
 
@@ -252,198 +450,21 @@ fprintf('\nDone.\n');
 % 内部函数
 % =========================================================================
 
-function t = init_track_state()
-    t = struct('status', 'UNINITIATED', 'x', zeros(4,1), 'P', eye(4), ...
-        'ukf', [], 'init_window', {{}}, 'init_dets', {{}}, ...
-        'first_det', [], 'life', 0, 'missed', 0, 'quality', 0);
-end
-
-function [t, snap] = process_one_frame(t, detList, ukf_tpl, params, k, beam_center)
-    snap = struct('frameID', k, 'status', t.status, 'lat', NaN, 'lon', NaN, ...
-        'det_lat', NaN, 'det_lon', NaN, 'det_raw_lat', NaN, 'det_raw_lon', NaN, ...
-        'associated', false, 'assc_is_clutter', false);
-
-    switch t.status
-        case {'UNINITIATED', 'INITIATING'}
-            % M/N起始：收集每帧所有点迹，在触发时做多假设配对
-            if ~isempty(detList)
-                t.init_window{end+1} = 1;
-                t.init_dets{end+1} = detList;
-            else
-                t.init_window{end+1} = 0;
-                t.init_dets{end+1} = [];
-            end
-            if length(t.init_window) > params.tracker_N
-                t.init_window(1) = [];
-                t.init_dets(1) = [];
-            end
-            n_det = sum(cell2mat(t.init_window));
-            if n_det >= params.tracker_M && ~isempty(detList)
-                % 多假设共识配对：遍历窗内所有帧-帧检测对
-                det_now = detList(1);  % 当前帧首检测
-
-                best_prev = [];
-                best_support = -1;
-
-                % 遍历之前各帧的全部点迹，做配对（不检查速度——位置噪声太大时速度不可靠）
-                for i = 1:(length(t.init_dets)-1)
-                    prev_dets = t.init_dets{i};
-                    if isempty(prev_dets), continue; end
-                    for p = 1:length(prev_dets)
-                        dp = prev_dets(p);
-                        if ~isfield(dp, 'lat') || isnan(dp.lat), continue; end
-                        if ~isfield(det_now, 'lat') || isnan(det_now.lat), continue; end
-
-                        % 共识评分：统计窗内其他帧有多少点迹同时靠近dp和det_now
-                        support = 0;
-                        for jj = 1:(length(t.init_dets)-1)
-                            if jj == i, continue; end
-                            other2 = t.init_dets{jj};
-                            if isempty(other2), continue; end
-                            for oo = 1:length(other2)
-                                do = other2(oo);
-                                if ~isfield(do, 'lat') || isnan(do.lat), continue; end
-                                d1 = sphere_utils_haversine_distance(dp.lon, dp.lat, do.lon, do.lat);
-                                d2 = sphere_utils_haversine_distance(det_now.lon, det_now.lat, do.lon, do.lat);
-                                if d1 < 80000 && d2 < 80000
-                                    support = support + 1;
-                                end
-                            end
-                        end
-                        if support > best_support
-                            best_support = support;
-                            best_prev = dp;
-                        end
-                    end
-                end
-
-                % 仅当存在共识配对时才起始（至少1个其他帧的点迹同时靠近配对两点）
-                if best_support >= 1
-                    t.status = 'TRACKING';
-                    t.life = 0;  t.missed = 0;  t.quality = 0;
-                    t.ukf = ukf_filter_init(ukf_tpl, best_prev, det_now);
-                    t.x = t.ukf.x;  t.P = t.ukf.P;
-                    snap.lat = t.x(3);  snap.lon = t.x(1);
-                    snap.det_lat = det_now.lat;  snap.det_lon = det_now.lon;
-                    if isfield(det_now, 'raw_lat')
-                        snap.det_raw_lat = det_now.raw_lat;
-                        snap.det_raw_lon = det_now.raw_lon;
-                    end
-                    snap.associated = true;
-                    snap.assc_is_clutter = det_now.is_clutter;
-                end
-                % 无共识配对：暂不起始，继续收集下一帧
-            end
-            snap.status = t.status;
-
-        case 'TRACKING'
-            t.ukf.dt = params.dt_sec;
-            [x_pred, P_pred, X_pred, t.ukf] = ukf_predict_step(t.ukf);
-
-            % 计算预测量测及完整新息协方差 P_zz（含状态不确定性投影）
-            z_pred = ukf_measurement_model(t.ukf, x_pred);
-            Z_pred = zeros(t.ukf.m, 2*t.ukf.n + 1);
-            for i = 1:(2*t.ukf.n + 1)
-                Z_pred(:,i) = ukf_measurement_model(t.ukf, X_pred(:,i));
-            end
-            P_zz = t.ukf.R;
-            for i = 1:(2*t.ukf.n + 1)
-                dz = Z_pred(:,i) - z_pred;
-                P_zz = P_zz + t.ukf.Wc(i) * (dz * dz');
-            end
-            P_zz_2d = P_zz(1:2, 1:2);  % 只用距离+方位做波门
-
-            % 数值稳定性守卫：若 P_zz 含 NaN（Sigma点量测异常），退化为纯预测
-            if any(isnan(P_zz_2d(:))) || any(isnan(z_pred))
-                best = [];
-            else
-                % 航迹确认期：用地理距离预筛选（UKF不确定性大时P_zz门过宽）
-                use_geo_gate = (t.life <= 15);
-                best = [];  best_dist = inf;
-                for d = 1:length(detList)
-                    dp = detList(d);
-                    if ~isfield(dp, 'lat') || isnan(dp.lat), continue; end
-
-                    % 确认期地理距离预筛选：目标点迹必须在预测位置80 km内
-                    if use_geo_gate
-                        geo_err = sphere_utils_haversine_distance(...
-                            x_pred(1), x_pred(3), dp.lon, dp.lat);
-                        if geo_err > 80000, continue; end
-                    end
-
-                    z_meas_2d = [dp.drange; dp.daz];
-                    innov_2d = z_meas_2d - z_pred(1:2);
-                    if innov_2d(2) > 180, innov_2d(2) = innov_2d(2) - 360;
-                    elseif innov_2d(2) < -180, innov_2d(2) = innov_2d(2) + 360; end
-                    mahal = innov_2d' * (P_zz_2d \ innov_2d);
-                    if mahal < params.gate_sigma^2 * 2 && mahal < best_dist
-                        best_dist = mahal;  best = dp;
-                    end
-                end
-            end
-
-            if ~isempty(best)
-                [~, ~, t.ukf] = ukf_filter_update(t.ukf, best);
-                t.x = t.ukf.x;  t.P = t.ukf.P;
-                t.missed = 0;  t.life = t.life + 1;
-                t.quality = min(t.quality + 1, 5);
-                snap.lat = t.x(3);  snap.lon = t.x(1);
-                snap.det_lat = best.lat;  snap.det_lon = best.lon;
-                if isfield(best, 'raw_lat')
-                    snap.det_raw_lat = best.raw_lat;
-                    snap.det_raw_lon = best.raw_lon;
-                end
-                snap.associated = true;
-                snap.assc_is_clutter = best.is_clutter;
-            else
-                % 波门内无点迹：纯预测
-                t.ukf.x = x_pred;  t.ukf.P = P_pred;
-                t.missed = t.missed + 1;  t.life = t.life + 1;
-                t.quality = max(t.quality - 1, 0);
-                snap.lat = x_pred(3);  snap.lon = x_pred(1);
-                snap.associated = false;
-                if t.missed >= params.tracker_K_loss
-                    t.status = 'LOST';
-                end
-            end
-            % 航迹质量确认：起始后15帧内若质量归零且连续2帧无关联，判定起始失败
-            if t.life <= 15 && t.quality <= 0 && t.missed >= 2
-                t.status = 'LOST';
-            end
-            snap.status = t.status;
-
-        case 'LOST'
-            % 航迹终止后重新尝试起始
-            t.status = 'UNINITIATED';
-            t.init_window = {};
-            t.init_dets = {};
-            t.first_det = [];
-            t.quality = 0;
-            snap.status = 'LOST';
+function s = get_type_str(t)
+    switch t
+        case 1, s = 'RELIABLE';
+        case 2, s = 'MAINTAIN';
+        case 6, s = 'TEMPORARY';
+        case 7, s = 'HISTORY';
+        otherwise, s = 'UNKNOWN';
     end
 end
 
-function n = count_valid_frames(stateList)
-    n = 0;
-    for k = 1:length(stateList)
-        s = stateList{k};
-        if ~isempty(s) && isfield(s, 'lat') && ~isnan(s.lat)
-            n = n + 1;
-        end
-    end
-end
-
-function s = compute_stats(detList, true_track, t_grid, params, tag)
-    s.total = 0;  s.target = 0;  s.false = 0;
-    for k = 1:length(detList)
-        dets = detList{k};
-        for d = 1:length(dets)
-            s.total = s.total + 1;
-            if dets(d).is_clutter
-                s.false = s.false + 1;
-            else
-                s.target = s.target + 1;
-            end
+function idx = find_active_tracks(trackList)
+    idx = [];
+    for t = 1:length(trackList)
+        if trackList{t}.type ~= 7
+            idx(end+1) = t;
         end
     end
 end
