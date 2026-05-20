@@ -20,6 +20,10 @@ function aligned_R2 = time_align_tracks(trackSnapshots_R2, params)
         for t = 1:length(snap.trackList)
             trk = snap.trackList{t};
             if trk.type == 7, continue; end  % 跳过已终止航迹
+            if trk.type == 6, continue; end  % 跳过未起始的临时航迹
+            if isempty(trk.ukf) || ~isfield(trk.ukf, 'x') || isempty(trk.ukf.x)
+                continue;
+            end
 
             % CV模型状态转移矩阵 (Δt = -offset, 回退)
             dt = -dt_offset;

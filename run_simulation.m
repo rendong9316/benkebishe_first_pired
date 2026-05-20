@@ -130,6 +130,9 @@ for k = 1:n_frames
         params.radar1_range_bias_m, params.radar1_azimuth_bias_deg, ...
         params.radar1_beam_center_deg, params, ...
         params.radar1_range_noise_std_m, params.radar1_azimuth_noise_std_deg);
+    for d = 1:length(detRaw_R1{k})
+        detRaw_R1{k}(d).aircraft_id = 1;
+    end
 
     % R2
     rng(params.random_seed + 10000 + k);
@@ -140,6 +143,9 @@ for k = 1:n_frames
         params.radar2_range_bias_m, params.radar2_azimuth_bias_deg, ...
         params.radar2_beam_center_deg, params, ...
         params.radar2_range_noise_std_m, params.radar2_azimuth_noise_std_deg);
+    for d = 1:length(detRaw_R2{k})
+        detRaw_R2{k}(d).aircraft_id = 1;
+    end
 end
 
 fprintf('原始点迹生成完成: R1共%d帧, R2共%d帧\n', n_frames, n_frames);

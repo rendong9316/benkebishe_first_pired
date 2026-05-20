@@ -11,15 +11,15 @@ function params = simulation_params()
     params.time_offset_radar1_sec = 0.0;
     params.time_offset_radar2_sec = 13.0;
 
-    % ==================== 2. 站点几何布局 ====================
-    params.radar1_lon = 112.0;   params.radar1_lat = 33.5;
-    params.radar2_lon = 114.0;   params.radar2_lat = 31.5;
-    params.radar1_tx_lon = 108.0;  params.radar1_tx_lat = 33.5;
-    params.radar2_tx_lon = 110.0;  params.radar2_tx_lat = 31.5;
+    % ==================== 2. 站点几何布局（虚构坐标） ====================
+    params.radar1_lon = 113.0;   params.radar1_lat = 33.5;
+    params.radar2_lon = 115.0;   params.radar2_lat = 33.0;
+    params.radar1_tx_lon = 109.0;  params.radar1_tx_lat = 33.5;
+    params.radar2_tx_lon = 111.0;  params.radar2_tx_lat = 33.0;
 
     % ==================== 3. 雷达探测范围约束 ====================
-    params.radar1_beam_center_deg = 91.5;
-    params.radar2_beam_center_deg = 83.5;
+    params.radar1_beam_center_deg = 92.0;
+    params.radar2_beam_center_deg = 91.0;
     params.beam_width_deg = 15.0;
     params.range_min_km = 1000.0;
     params.range_max_km = 2000.0;

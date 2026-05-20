@@ -74,6 +74,7 @@ function fusion_eval = evaluate_fusion(all_fused_snapshots, method_names, ...
                 ac = pair_to_aircraft(p_idx);
                 if ac == 0, continue; end
 
+                if isnan(ftrk.lon), continue; end
                 d = haversine_km(ftrk.lon, ftrk.lat, t_true_lon_all(ac), t_true_lat_all(ac));
                 fusion_errs{m, ac}(end+1) = d;
             end
@@ -107,7 +108,7 @@ function fusion_eval = evaluate_fusion(all_fused_snapshots, method_names, ...
                     if pair_to_aircraft(p) == a
                         r1_id = matched_pairs(p).R1_track_id;
                         trk1 = find_track_by_id(snap_r1, r1_id);
-                        if ~isempty(trk1)
+                        if ~isempty(trk1) && ~isnan(trk1.lon)
                             d = haversine_km(trk1.lon, trk1.lat, t_true_lon, t_true_lat);
                             r1_errs{a}(end+1) = d;
                         end
@@ -123,7 +124,7 @@ function fusion_eval = evaluate_fusion(all_fused_snapshots, method_names, ...
                     if pair_to_aircraft(p) == a
                         r2_id = matched_pairs(p).R2_track_id;
                         trk2 = find_track_by_id(snap_r2, r2_id);
-                        if ~isempty(trk2)
+                        if ~isempty(trk2) && ~isnan(trk2.lon)
                             d = haversine_km(trk2.lon, trk2.lat, t_true_lon, t_true_lat);
                             r2_errs{a}(end+1) = d;
                         end

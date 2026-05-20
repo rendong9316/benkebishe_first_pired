@@ -46,6 +46,14 @@ function fused_snapshots = run_track_fusion(matched_pairs, trackSnapshots_R1, ..
             % 查找本帧R2航迹
             trk2 = find_track(snap_r2, r2_id);
 
+            % 跳过无有效UKF状态的航迹 (起始前/终止后)
+            if ~isempty(trk1) && (isempty(trk1.ukf) || ~isfield(trk1.ukf,'x') || isempty(trk1.ukf.x))
+                trk1 = [];
+            end
+            if ~isempty(trk2) && (isempty(trk2.ukf) || ~isfield(trk2.ukf,'x') || isempty(trk2.ukf.x))
+                trk2 = [];
+            end
+
             if isempty(trk1) && isempty(trk2)
                 continue;  % 两源都无数据
             end

@@ -1,53 +1,122 @@
 % =========================================================================
 % single_track_runner.m
-% 单目标简化的逐帧航迹管理 (替代 multi_track_manager)
+% 单目标逐帧航迹管理 (M/N滑窗起始 + UKF预测更新)
 % =========================================================================
-% 不使用 M/N 起始逻辑, 直接从首帧可用点迹初始化 UKF
-% 后续帧: UKF 预测 → 最近邻关联 (加地理门限) → PDA 更新或纯预测
+% 起始策略:
+%   不依赖 is_clutter 标记 (真实雷达不存在此信息).
+%   使用 M/N 滑窗收集全部点迹, 通过时空一致性自然排除杂波:
+%     1. 滑窗N帧, 至少M帧有点迹 → 触发起始尝试
+%     2. 遍历首帧×末帧所有点迹对, 估计速度在 [30,600] m/s 之间
+%     3. 中间帧有点迹靠近配对轨迹 → 支持度最高的配对获胜
+%     4. 支持度 >= 1 → 两点差分初始化UKF; 否则继续滑窗
+% 跟踪策略:
+%   UKF预测 → 地理预筛选 → 马氏距离NN关联 → PDA加权更新 / 纯预测
+%   K_loss 连续漏检 → LOST → 重新起始
 % =========================================================================
 
 function [trackSnapshots, finalTrack] = single_track_runner(detList, ukf_tpl, params, n_frames)
     trackSnapshots = cell(n_frames, 1);
     ukf = [];
-    track_state = 'UNINIT';
+    track_state = 'INITIATING';
     life = 0;
     missed = 0;
     quality = 0;
+
+    % M/N起始参数
+    N = params.tracker_N;
+    M = params.tracker_M;
+    init_window = {};     % 每帧的点迹列表
+    window_has_det = [];  % 每帧是否有点迹 (逻辑值)
 
     for k = 1:n_frames
         snap = struct('frameID', k, 'trackList', {{}});
         dets = detList{k};
 
         switch track_state
-            case 'UNINIT'
-                % 找距离波束中心最近的非杂波点迹作为初始检测
-                if ~isempty(dets)
-                    best_det = []; best_idx = 1;
-                    for d = 1:length(dets)
-                        if dets(d).is_clutter, continue; end
-                        if isempty(best_det)
-                            best_det = dets(d); best_idx = d;
+            case 'INITIATING'
+                % ---- 滑窗收集 ----
+                init_window{end+1} = dets;
+                window_has_det(end+1) = ~isempty(dets);
+                if length(init_window) > N
+                    init_window(1) = [];
+                    window_has_det(1) = [];
+                end
+
+                n_with_det = sum(window_has_det);
+                if n_with_det >= M && ~isempty(dets)
+                    % 多假设配对: 当前帧每个点迹 vs 窗内之前各帧每个点迹
+                    best_prev = [];
+                    best_curr_idx = 1;
+                    best_support = -1;
+
+                    for curr_idx = 1:length(dets)
+                        for i = 1:(length(init_window)-1)
+                            prev_dets = init_window{i};
+                            if isempty(prev_dets), continue; end
+                            for p = 1:length(prev_dets)
+                                dp = prev_dets(p);
+                                dc = dets(curr_idx);
+                                if ~isfield(dp, 'lat') || isnan(dp.lat), continue; end
+                                if ~isfield(dc, 'lat') || isnan(dc.lat), continue; end
+
+                                % 速度合理性检验
+                                dist = sphere_utils_haversine_distance(dp.lon, dp.lat, dc.lon, dc.lat);
+                                dt_frames = length(init_window) - i;
+                                est_speed = dist / (dt_frames * params.dt_sec);
+                                if est_speed < 30 || est_speed > 600
+                                    continue;
+                                end
+
+                                % 共识评分: 窗内其他帧有多少点迹靠近轨迹
+                                support = 0;
+                                for jj = 1:(length(init_window)-1)
+                                    if jj == i, continue; end
+                                    other = init_window{jj};
+                                    if isempty(other), continue; end
+                                    for oo = 1:length(other)
+                                        do = other(oo);
+                                        if ~isfield(do, 'lat') || isnan(do.lat), continue; end
+                                        d1 = sphere_utils_haversine_distance(dp.lon, dp.lat, do.lon, do.lat);
+                                        d2 = sphere_utils_haversine_distance(dc.lon, dc.lat, do.lon, do.lat);
+                                        if d1 < 80000 && d2 < 80000
+                                            support = support + 1;
+                                        end
+                                    end
+                                end
+                                if support > best_support
+                                    best_support = support;
+                                    best_prev = dp;
+                                    best_curr_idx = curr_idx;
+                                end
+                            end
                         end
                     end
-                    if ~isempty(best_det)
-                        % 单点初始化UKF (零速假设)
-                        rng_meas = best_det.range_meas;
-                        az_meas = best_det.azimuth_meas;
-                        [lon, lat] = ukf_meas_to_latlon(ukf_tpl, rng_meas, az_meas);
-                        ukf = ukf_tpl;
-                        ukf.x = [lon; 0; lat; 0];
-                        ukf.P = diag([params.ukf_P_pos_std^2, params.ukf_P_vel_std^2, ...
-                                      params.ukf_P_pos_std^2, params.ukf_P_vel_std^2]);
+
+                    % 仅当共识配对存在 (>=1个其他帧支持) 才起始
+                    if best_support >= 1
+                        best_curr = dets(best_curr_idx);
+                        ukf = ukf_filter_init(ukf_tpl, best_prev, best_curr);
+                        ukf.dt = params.dt_sec;
                         ukf.initialized = true;
                         ukf.Q_base = ukf.Q;
                         ukf.Q_ema = 1.0;
                         track_state = 'TRACKING';
-                        life = 1; missed = 0; quality = 5;
+                        life = 1;  missed = 0;  quality = 5;
 
                         snap.trackList{1} = make_track_snap(1, 1, ukf.x(3), ukf.x(1), ...
-                            ukf, life, quality, 0, best_det);
+                            ukf, life, quality, 0, best_curr);
+
+                        init_window = {};  % 清空, 不再使用
+                        window_has_det = [];
+                        trackSnapshots{k} = snap;
+                        continue;
                     end
                 end
+
+                % 未触发起始: 空快照
+                snap.trackList{1} = make_track_snap(1, 6, NaN, NaN, [], 0, 0, 0, []);
+                trackSnapshots{k} = snap;
+                continue;
 
             case 'TRACKING'
                 ukf.dt = params.dt_sec;
@@ -141,6 +210,11 @@ function [trackSnapshots, finalTrack] = single_track_runner(detList, ukf_tpl, pa
                     ukf, life, quality, missed, best_det);
 
             case 'LOST'
+                % 航迹终止后重新起始
+                track_state = 'INITIATING';
+                init_window = {};
+                window_has_det = [];
+                life = 0; missed = 0; quality = 0;
                 snap.trackList{1} = make_track_snap(1, 7, NaN, NaN, ukf, life, quality, missed, []);
         end
 
