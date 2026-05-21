@@ -1,6 +1,6 @@
 % =========================================================================
 % plot_single_fusion_result.m
-% 单目标融合航迹可视化: 地图叠加 + 误差收敛曲线
+% 单目标融合航迹可视化: 地图叠加 + 误差收敛曲线，带图层复选框
 % =========================================================================
 
 function plot_single_fusion_result(true_track, trackSnapshots_R1, trackSnapshots_R2, ...
@@ -10,9 +10,13 @@ function plot_single_fusion_result(true_track, trackSnapshots_R1, trackSnapshots
     frame_times = (0:length(trackSnapshots_R1)-1) * params.dt_sec;
 
     %% ===== Figure 1: 地图叠加 =====
-    fig1 = figure('Position', [50, 50, 1400, 750]);
-    ax = geoaxes('Units', 'normalized', 'Position', [0.04, 0.10, 0.68, 0.88]);
-    ax.Basemap = 'landcover';
+    fig1 = figure('Position', [50, 50, 1400, 850]);
+    try
+        ax = geoaxes('Units', 'normalized', 'Position', [0.04, 0.10, 0.68, 0.88]);
+        ax.Basemap = 'darkwater';
+    catch
+        ax = geoaxes('Units', 'normalized', 'Position', [0.04, 0.10, 0.68, 0.88]);
+    end
     hold(ax, 'on');
 
     h_all = []; layer_names = {};
@@ -78,45 +82,50 @@ function plot_single_fusion_result(true_track, trackSnapshots_R1, trackSnapshots
 
     title(ax, sprintf('单目标双基地雷达航迹融合结果 (%s最优)', method_names{best_idx}));
 
-    % 右侧面板
-    panel = uipanel('Units', 'normalized', 'Position', [0.74, 0.04, 0.24, 0.94], ...
-        'Title', '图层显隐控制', 'FontSize', 11);
-
-    n_layers = length(layer_names);
-    cb = gobjects(1, n_layers);
-    rh = 0.030;
-    for i = 1:n_layers
-        ypos = 0.92 - (i-1) * rh;
+    % ---- 右侧图层控制面板 ----
+    n_layers1 = length(layer_names);
+    cb1 = gobjects(1, n_layers1);
+    for i = 1:n_layers1
+        ypos = 0.92 - (i-1) * 0.040;
         if ypos < 0.05, break; end
-        cb(i) = uicontrol('Parent', panel, 'Style', 'checkbox', ...
+        cb1(i) = uicontrol('Parent', fig1, 'Style', 'checkbox', ...
             'String', layer_names{i}, 'Value', 1, ...
-            'Units', 'normalized', 'Position', [0.05, ypos, 0.9, rh-0.002], ...
-            'FontSize', 6.5, ...
-            'Callback', @(src, ~) try_set(h_all(i), src.Value));
+            'Units', 'normalized', 'Position', [0.74, ypos, 0.24, 0.036], ...
+            'FontSize', 9, 'BackgroundColor', [1 1 1], ...
+            'Callback', @(src, ~) try_set_visible(h_all(i), src.Value));
     end
 
-    btn_y = 0.92 - n_layers * rh - 0.02;
-    if btn_y > 0.02
-        uicontrol('Parent', panel, 'Style', 'pushbutton', ...
+    btn_bottom1 = 0.92 - n_layers1 * 0.040 - 0.01;
+    if btn_bottom1 > 0.02
+        uicontrol('Parent', fig1, 'Style', 'pushbutton', ...
             'String', '全部隐藏', ...
-            'Units', 'normalized', 'Position', [0.1, btn_y, 0.8, 0.04], ...
-            'FontSize', 8, ...
-            'Callback', @(src, ~) toggle_all(src, cb, h_all));
+            'Units', 'normalized', 'Position', [0.74, btn_bottom1, 0.11, 0.04], ...
+            'FontSize', 9, ...
+            'Callback', @(src, ~) toggle_all_cb(src, cb1, h_all));
+        uicontrol('Parent', fig1, 'Style', 'pushbutton', ...
+            'String', '全部显示', ...
+            'Units', 'normalized', 'Position', [0.86, btn_bottom1, 0.11, 0.04], ...
+            'FontSize', 9, ...
+            'Callback', @(~, ~) show_all_cb(cb1, h_all));
     end
 
     % 融合结果标注
     best_rmse = fusion_eval.overall(best_idx).s.rms;
-    dim = [0.05, 0.72, 0.22, 0.10];
-    str = sprintf('单目标融合 (直接1对1)\n最佳: %s RMSE=%.1fkm', ...
-        method_names{best_idx}, best_rmse);
-    annotation('textbox', dim, 'String', str, ...
-        'FontSize', 8, 'BackgroundColor', 'w', 'EdgeColor', 'k');
+    uicontrol('Parent', fig1, 'Style', 'text', ...
+        'Units', 'normalized', 'Position', [0.74, 0.005, 0.24, 0.04], ...
+        'String', sprintf('最佳: %s RMSE=%.1fkm', method_names{best_idx}, best_rmse), ...
+        'FontSize', 9, 'BackgroundColor', [1 1 1], 'FontWeight', 'bold');
 
-    saveas(fig1, fullfile(out_dir, 'fig6_single_fusion_map.png'));
+    drawnow;
+    try
+        exportgraphics(fig1, fullfile(out_dir, 'fig6_single_fusion_map.png'), 'Resolution', 200);
+    catch
+        saveas(fig1, fullfile(out_dir, 'fig6_single_fusion_map.png'));
+    end
     fprintf('  融合地图已保存: fig6_single_fusion_map.png\n');
 
     %% ===== Figure 2: 误差收敛曲线 =====
-    fig2 = figure('Position', [50, 50, 1400, 600]);
+    fig2 = figure('Position', [50, 50, 1400, 650]);
     win = 10;
 
     method_ls = {'-', '--', '-.', ':'};
@@ -157,7 +166,7 @@ function plot_single_fusion_result(true_track, trackSnapshots_R1, trackSnapshots
 
     xlabel('时间 (s)'); ylabel('位置误差 (km)');
     title(sprintf('误差收敛曲线 (滑动平均 %d帧)', win));
-    legend(all_line_names, 'FontSize', 7, 'Location', 'best');
+    legend(all_line_names, 'FontSize', 8, 'Location', 'best');
 
     % CDF
     subplot(1, 2, 2);
@@ -180,50 +189,33 @@ function plot_single_fusion_result(true_track, trackSnapshots_R1, trackSnapshots
     end
     xlabel('位置误差 (km)'); ylabel('累积概率 (%)');
     title('误差CDF对比');
-    legend([method_names, {'R1 UKF', 'R2 UKF'}], 'FontSize', 7, 'Location', 'southeast');
+    legend([method_names, {'R1 UKF', 'R2 UKF'}], 'FontSize', 8, 'Location', 'southeast');
 
-    % 曲线控制面板
-    panel2 = uipanel('Units', 'normalized', 'Position', [0.76, 0.04, 0.22, 0.94], ...
-        'Title', '曲线显隐控制', 'FontSize', 11);
+    % ---- 右侧曲线控制面板 ----
     n2 = length(all_line_names);
     cb2 = gobjects(1, n2);
     for i = 1:n2
-        ypos = 0.92 - (i-1) * 0.035;
+        ypos = 0.92 - (i-1) * 0.05;
         if ypos < 0.05, break; end
-        cb2(i) = uicontrol('Parent', panel2, 'Style', 'checkbox', ...
+        cb2(i) = uicontrol('Parent', fig2, 'Style', 'checkbox', ...
             'String', all_line_names{i}, 'Value', 1, ...
-            'Units', 'normalized', 'Position', [0.05, ypos, 0.9, 0.032], ...
-            'FontSize', 7, ...
-            'Callback', @(src, ~) set(all_h_lines(i), 'Visible', onoff(src.Value)));
+            'Units', 'normalized', 'Position', [0.76, ypos, 0.22, 0.045], ...
+            'FontSize', 9, 'BackgroundColor', [1 1 1], ...
+            'Callback', @(src, ~) try_set_visible(all_h_lines(i), src.Value));
     end
 
-    saveas(fig2, fullfile(out_dir, 'fig7_single_fusion_error.png'));
+    drawnow;
+    try
+        exportgraphics(fig2, fullfile(out_dir, 'fig7_single_fusion_error.png'), 'Resolution', 200);
+    catch
+        saveas(fig2, fullfile(out_dir, 'fig7_single_fusion_error.png'));
+    end
     fprintf('  误差收敛曲线已保存: fig7_single_fusion_error.png\n');
 end
 
 % =========================================================================
 % 辅助函数
 % =========================================================================
-
-function v = onoff(val)
-    if val, v = 'on'; else, v = 'off'; end
-end
-
-function try_set(h, val)
-    try, set(h, 'Visible', onoff(val)); catch, end
-end
-
-function toggle_all(btn, cb, h_all)
-    if strcmp(btn.String, '全部隐藏')
-        new_val = 0; btn.String = '全部显示';
-    else
-        new_val = 1; btn.String = '全部隐藏';
-    end
-    for i = 1:length(cb)
-        if cb(i) ~= 0, set(cb(i), 'Value', new_val); end
-        try, set(h_all(i), 'Visible', onoff(new_val)); catch, end
-    end
-end
 
 function tracks = collect_positions(snapshots)
     track_map = containers.Map('KeyType', 'int32', 'ValueType', 'any');
@@ -312,4 +304,31 @@ function d = haversine_km(lon1, lat1, lon2, lat2)
     a = sin(dlat/2)^2 + cos(deg2rad(lat1))*cos(deg2rad(lat2))*sin(dlon/2)^2;
     a = max(0, min(1, a));
     d = R * 2 * atan2(sqrt(a), sqrt(1 - a));
+end
+
+function try_set_visible(h, val)
+    try
+        if val, v = 'on'; else, v = 'off'; end
+        set(h, 'Visible', v);
+    catch
+    end
+end
+
+function toggle_all_cb(btn, cb, h_all)
+    if strcmp(btn.String, '全部隐藏')
+        new_val = 0; btn.String = '全部显示';
+    else
+        new_val = 1; btn.String = '全部隐藏';
+    end
+    for i = 1:length(cb)
+        if cb(i) ~= 0, set(cb(i), 'Value', new_val); end
+        try_set_visible(h_all(i), new_val);
+    end
+end
+
+function show_all_cb(cb, h_all)
+    for i = 1:length(cb)
+        if cb(i) ~= 0, set(cb(i), 'Value', 1); end
+        try_set_visible(h_all(i), 1);
+    end
 end

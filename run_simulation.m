@@ -1,4 +1,4 @@
-% =========================================================================
+%% =========================================================================
 % run_simulation.m
 % 双基地外辐射源雷达单目标逐帧仿真主程序
 % =========================================================================
@@ -218,23 +218,27 @@ fprintf('偏差校正完成: R1=%d帧, R2=%d帧\n', n_frames, n_frames);
 %% ==================== Phase 5: 单目标航迹跟踪 ====================
 fprintf('\n========== Phase 5: 单目标航迹跟踪 ==========\n');
 
-% R1 UKF (精密站参数)
+% R1 UKF (precision station)
 params.ukf_range_std_m = params.radar1_range_noise_std_m;
 params.ukf_azimuth_std_deg = params.radar1_azimuth_noise_std_deg;
+params.ukf_Q_scale = 5e4;
+params.ukf_P_pos_std = 0.2;
+params.ukf_P_vel_std = 0.004;
+params.gate_sigma = 2.0;
 ukf1_tpl = ukf_filter(params, params.radar1_lon, params.radar1_lat, ...
     params.radar1_tx_lon, params.radar1_tx_lat, params.dt_sec);
 
-% R2 params (普通站: 放宽门限和Q适配高噪声)
+% R2 params (standard station, ~2x noise of R1)
 params_r2 = params;
 params_r2.ukf_range_std_m = params.radar2_range_noise_std_m;
 params_r2.ukf_azimuth_std_deg = params.radar2_azimuth_noise_std_deg;
 params_r2.gate_sigma = 2.5;
-params_r2.ukf_Q_scale = 1.5e5;
-params_r2.ukf_P_pos_std = 0.5;
-params_r2.ukf_P_vel_std = 0.01;
-params_r2.tracker_M = 4;     % 高噪声下需更严格起始
+params_r2.ukf_Q_scale = 1e5;
+params_r2.ukf_P_pos_std = 0.3;
+params_r2.ukf_P_vel_std = 0.005;
+params_r2.tracker_M = 4;
 params_r2.tracker_N = 8;
-params_r2.tracker_K_loss = 10;
+params_r2.tracker_K_loss = 12;
 
 ukf2_tpl = ukf_filter(params_r2, params.radar2_lon, params.radar2_lat, ...
     params.radar2_tx_lon, params.radar2_tx_lat, params.dt_sec);
@@ -272,6 +276,40 @@ fprintf('R1: type=%s quality=%d life=%d\n', ...
     get_type_str(finalTrk1.type), finalTrk1.quality, finalTrk1.life);
 fprintf('R2: type=%s quality=%d life=%d\n', ...
     get_type_str(finalTrk2.type), finalTrk2.quality, finalTrk2.life);
+
+% ---- 关联诊断 ----
+for radar_label = {'R1', 'R2'}
+    snaps = trackSnapshots_R1;
+    if strcmp(radar_label{1}, 'R2'), snaps = trackSnapshots_R2; end
+    n_assoc = 0; n_predict = 0; n_init = 0; n_lost = 0;
+    init_frame = 0; nis_vals = [];
+    for k = 1:length(snaps)
+        if isempty(snaps{k}.trackList), continue; end
+        trk = snaps{k}.trackList{1};
+        if trk.type == 6, n_init = n_init + 1;
+        elseif trk.type == 1
+            if ~isempty(trk.assoc_det) && isstruct(trk.assoc_det) && isfield(trk.assoc_det, 'prange') && ~isempty(trk.assoc_det.prange)
+                n_assoc = n_assoc + 1;
+            else
+                n_predict = n_predict + 1;
+            end
+            if isfield(trk.ukf, 'nis_history')
+                nis_vals = [nis_vals, trk.ukf.nis_history];
+            end
+        elseif trk.type == 7, n_lost = n_lost + 1; end
+        if init_frame == 0 && trk.type == 1, init_frame = k; end
+    end
+    n_tracked = n_assoc + n_predict;
+    fprintf('%s: 起始帧=%d | 关联=%d 纯预测=%d (关联率=%.0f%%) | 起始中=%d 丢失=%d\n', ...
+        radar_label{1}, init_frame, n_assoc, n_predict, ...
+        n_assoc/max(1,n_tracked)*100, n_init, n_lost);
+    if ~isempty(nis_vals)
+        nis_in_gate = sum(nis_vals < 4*2);
+        fprintf('  NIS: 均值=%.2f 门内=%.0f%% (%d/%d)\n', ...
+            mean(nis_vals), nis_in_gate/length(nis_vals)*100, nis_in_gate, length(nis_vals));
+    end
+end
+fprintf('\n');
 
 %% ==================== Phase 6: 航迹级时间对齐 ====================
 fprintf('\n========== Phase 6: 航迹级时间对齐 ==========\n');
@@ -391,6 +429,9 @@ end
 fprintf('\n========== Phase 9: 可视化 ==========\n');
 if ~exist('results', 'dir'), mkdir('results'); end
 
+% 暂禁MATLAB 2026a内部UI尺寸警告 (不影响实际出图)
+warn_state = warning('off', 'all');
+
 plot_scene_overview(true_track, params, 'results');
 plot_point_cloud_3d(detList_R1, 'R1', 'results/fig2a_R1_point_cloud.png');
 plot_point_cloud_3d(detList_R2, 'R2', 'results/fig2b_R2_point_cloud.png');
@@ -402,6 +443,8 @@ plot_single_track_result(true_track, detList_R1, detList_R2, ...
 % 融合可视化
 plot_single_fusion_result(true_track, trackSnapshots_R1, trackSnapshots_R2, ...
     all_fused_snapshots, method_names, best_m, fusion_eval, truthTraj, params, 'results');
+
+warning(warn_state);  % 恢复警告状态
 
 fprintf('\n========== Phase 9: 数据保存 ==========\n');
 sysPara = struct(...

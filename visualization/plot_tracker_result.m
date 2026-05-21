@@ -172,8 +172,12 @@ function fig = plot_tracker_result(true_track, ...
 
     % ---- 导出 ----
     drawnow;
-    exportgraphics(fig, fullfile(out_dir, 'tracker_fragments_and_stitching.png'), ...
-                   'Resolution', 200);
+    try
+        exportgraphics(fig, fullfile(out_dir, 'tracker_fragments_and_stitching.png'), ...
+                       'Resolution', 200);
+    catch
+        saveas(fig, fullfile(out_dir, 'tracker_fragments_and_stitching.png'));
+    end
     fprintf('  可视化已保存到 %s\n', fullfile(out_dir, 'tracker_fragments_and_stitching.png'));
 end
 

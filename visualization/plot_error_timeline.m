@@ -5,7 +5,7 @@
 
 function plot_error_timeline(trackState_R1, trackState_R2, detList_R1, detList_R2, ...
         true_track, t1_grid, t2_grid, params, out_dir)
-    figure('Position', [100, 100, 1200, 800]);
+    fig = figure('Position', [100, 100, 1200, 800]);
 
     n_frames = length(trackState_R1);
     err_R1 = nan(n_frames, 1);
@@ -111,6 +111,11 @@ function plot_error_timeline(trackState_R1, trackState_R2, detList_R1, detList_R
     grid on;
 
     sgtitle(sprintf('误差与事件时间线 (nFrames=%d)', n_frames));
-    saveas(gcf, fullfile(out_dir, 'fig4_error_timeline.png'));
+    drawnow;
+    try
+        exportgraphics(fig, fullfile(out_dir, 'fig4_error_timeline.png'), 'Resolution', 200);
+    catch
+        saveas(fig, fullfile(out_dir, 'fig4_error_timeline.png'));
+    end
     fprintf('  图4 已保存: fig4_error_timeline.png\n');
 end

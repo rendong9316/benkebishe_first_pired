@@ -6,9 +6,13 @@
 function plot_single_track_result(true_track, detList_R1, detList_R2, ...
         trackSnapshots_R1, trackSnapshots_R2, params, out_dir)
 
-    fig = figure('Position', [50, 50, 1400, 750]);
-    ax = geoaxes('Units', 'normalized', 'Position', [0.04, 0.10, 0.70, 0.88]);
-    ax.Basemap = 'landcover';
+    fig = figure('Position', [50, 50, 1400, 850]);
+    try
+        ax = geoaxes('Units', 'normalized', 'Position', [0.04, 0.10, 0.70, 0.88]);
+        ax.Basemap = 'darkwater';
+    catch
+        ax = geoaxes('Units', 'normalized', 'Position', [0.04, 0.10, 0.70, 0.88]);
+    end
     hold(ax, 'on');
 
     h_all = [];
@@ -100,41 +104,49 @@ function plot_single_track_result(true_track, detList_R1, detList_R2, ...
     title(ax, '单目标双基地雷达航迹综合对比');
     legend(ax, 'Location', 'northeastoutside');
 
-    % ---- 右侧控制面板 ----
-    panel = uipanel('Units', 'normalized', 'Position', [0.76, 0.04, 0.22, 0.94], ...
-        'Title', '图层显隐控制', 'FontSize', 11);
-
+    % ---- 右侧图层控制面板 ----
     n_layers = length(layer_names);
-    cb_handles = gobjects(1, n_layers);
-    row_height = 0.035;
+    cb = gobjects(1, n_layers);
+
     for i = 1:n_layers
-        ypos = 0.92 - (i-1) * row_height;
+        ypos = 0.92 - (i-1) * 0.045;
         if ypos < 0.05, break; end
-        cb_handles(i) = uicontrol('Parent', panel, 'Style', 'checkbox', ...
+        cb(i) = uicontrol('Parent', fig, 'Style', 'checkbox', ...
             'String', layer_names{i}, 'Value', 1, ...
-            'Units', 'normalized', 'Position', [0.05, ypos, 0.9, row_height-0.002], ...
-            'FontSize', 7, ...
-            'Callback', @(src, ~) set_layer_visible(h_all(i), src.Value));
+            'Units', 'normalized', 'Position', [0.76, ypos, 0.22, 0.040], ...
+            'FontSize', 9, 'BackgroundColor', [1 1 1], ...
+            'Callback', @(src, ~) try_set_visible(h_all(i), src.Value));
     end
 
-    btn_y = 0.92 - n_layers * row_height - 0.02;
-    if btn_y > 0.02
-        uicontrol('Parent', panel, 'Style', 'pushbutton', ...
+    % 全部显示/隐藏按钮
+    btn_bottom = 0.92 - n_layers * 0.045 - 0.01;
+    if btn_bottom > 0.02
+        uicontrol('Parent', fig, 'Style', 'pushbutton', ...
             'String', '全部隐藏', ...
-            'Units', 'normalized', 'Position', [0.1, btn_y, 0.8, 0.04], ...
-            'FontSize', 8, ...
-            'Callback', @(src, ~) toggle_all_layers(src, cb_handles, h_all));
+            'Units', 'normalized', 'Position', [0.76, btn_bottom, 0.10, 0.04], ...
+            'FontSize', 9, ...
+            'Callback', @(src, ~) toggle_all_cb(src, cb, h_all));
+        uicontrol('Parent', fig, 'Style', 'pushbutton', ...
+            'String', '全部显示', ...
+            'Units', 'normalized', 'Position', [0.87, btn_bottom, 0.10, 0.04], ...
+            'FontSize', 9, ...
+            'Callback', @(~, ~) show_all_cb(cb, h_all));
     end
 
     % 底部统计
-    uicontrol('Parent', panel, 'Style', 'text', ...
-        'Units', 'normalized', 'Position', [0.03, 0.005, 0.94, 0.04], ...
-        'String', sprintf('R1:%d航迹  R2:%d航迹 | Pd=%.0f%% Pfa=%.3f', ...
+    uicontrol('Parent', fig, 'Style', 'text', ...
+        'Units', 'normalized', 'Position', [0.76, 0.005, 0.22, 0.03], ...
+        'String', sprintf('R1:%d航迹 R2:%d航迹 | Pd=%.0f%% Pfa=%.3f', ...
         length(r1_tracks), length(r2_tracks), ...
         params.detection_probability*100, params.false_alarm_rate), ...
-        'FontSize', 7, 'HorizontalAlignment', 'center');
+        'FontSize', 8, 'BackgroundColor', [1 1 1]);
 
-    saveas(fig, fullfile(out_dir, 'fig4_single_track_result.png'));
+    drawnow;
+    try
+        exportgraphics(fig, fullfile(out_dir, 'fig4_single_track_result.png'), 'Resolution', 200);
+    catch
+        saveas(fig, fullfile(out_dir, 'fig4_single_track_result.png'));
+    end
     fprintf('  单目标跟踪综合图已保存: fig4_single_track_result.png\n');
 end
 
@@ -177,30 +189,29 @@ function tracks = collect_active_tracks(snapshots)
     tracks = values(track_map);
 end
 
-function v = onoff(val)
-    if val, v = 'on'; else, v = 'off'; end
-end
-
-function set_layer_visible(h, val)
+function try_set_visible(h, val)
     try
-        set(h, 'Visible', onoff(val));
+        if val, v = 'on'; else, v = 'off'; end
+        set(h, 'Visible', v);
     catch
     end
 end
 
-function toggle_all_layers(btn, cb_handles, h_all)
+function toggle_all_cb(btn, cb, h_all)
     if strcmp(btn.String, '全部隐藏')
         new_val = 0; btn.String = '全部显示';
     else
         new_val = 1; btn.String = '全部隐藏';
     end
-    for i = 1:length(cb_handles)
-        if cb_handles(i) ~= 0
-            set(cb_handles(i), 'Value', new_val);
-        end
-        try
-            set(h_all(i), 'Visible', onoff(new_val));
-        catch
-        end
+    for i = 1:length(cb)
+        if cb(i) ~= 0, set(cb(i), 'Value', new_val); end
+        try_set_visible(h_all(i), new_val);
+    end
+end
+
+function show_all_cb(cb, h_all)
+    for i = 1:length(cb)
+        if cb(i) ~= 0, set(cb(i), 'Value', 1); end
+        try_set_visible(h_all(i), 1);
     end
 end

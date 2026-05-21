@@ -1,17 +1,21 @@
 % =========================================================================
 % plot_combined_tracks.m
 % 综合航迹图：geoplot 叠加真实航迹、原始点迹、校准后点迹、UKF滤波航迹
-% 带复选框切换图层显隐
+% 带复选框切换图层显隐 (darkwater底图)
 % =========================================================================
 
 function plot_combined_tracks(true_track, detList_R1, detList_R2, ...
         trackState_R1, trackState_R2, params, out_dir)
 
-    fig = figure('Position', [50, 50, 1300, 850]);
+    fig = figure('Position', [50, 50, 1400, 850]);
 
     % ---- 左侧地理图 ----
-    ax = geoaxes('Units', 'normalized', 'Position', [0.05, 0.12, 0.70, 0.85]);
-    ax.Basemap = 'landcover';
+    try
+        ax = geoaxes('Units', 'normalized', 'Position', [0.04, 0.10, 0.70, 0.88]);
+        ax.Basemap = 'darkwater';
+    catch
+        ax = geoaxes('Units', 'normalized', 'Position', [0.04, 0.10, 0.70, 0.88]);
+    end
     hold(ax, 'on');
 
     % 提取各层数据
@@ -22,8 +26,8 @@ function plot_combined_tracks(true_track, detList_R1, detList_R2, ...
     [filt1_lat, filt1_lon] = extract_filtered_track(trackState_R1);
     [filt2_lat, filt2_lon] = extract_filtered_track(trackState_R2);
 
-    % 图层1: 真实航迹 (黑色虚线)
-    h1 = geoplot(ax, true_track(:,2), true_track(:,1), 'k--', ...
+    % 图层1: 真实航迹 (亮黄虚线, 适配暗底图)
+    h1 = geoplot(ax, true_track(:,2), true_track(:,1), 'y--', ...
         'LineWidth', 2, 'DisplayName', '真实航迹');
 
     % 图层2: R1 原始（校准前）关联点迹连线 (淡蓝色虚线)
@@ -48,12 +52,12 @@ function plot_combined_tracks(true_track, detList_R1, detList_R2, ...
         'LineWidth', 1.2, 'MarkerSize', 5, 'MarkerFaceColor', 'r', ...
         'DisplayName', 'R2 校准后点迹');
 
-    % 图层6: R1 UKF滤波航迹 (蓝色粗实线)
-    h6 = geoplot(ax, filt1_lat, filt1_lon, 'b-', ...
+    % 图层6: R1 UKF滤波航迹 (青色粗实线, 暗底图醒目)
+    h6 = geoplot(ax, filt1_lat, filt1_lon, 'c-', ...
         'LineWidth', 2.5, 'DisplayName', 'R1 UKF滤波');
 
-    % 图层7: R2 UKF滤波航迹 (红色粗实线)
-    h7 = geoplot(ax, filt2_lat, filt2_lon, 'r-', ...
+    % 图层7: R2 UKF滤波航迹 (品红粗实线)
+    h7 = geoplot(ax, filt2_lat, filt2_lon, 'm-', ...
         'LineWidth', 2.5, 'DisplayName', 'R2 UKF滤波');
 
     % 站点标记
@@ -73,43 +77,47 @@ function plot_combined_tracks(true_track, detList_R1, detList_R2, ...
         'MarkerSize', 12, 'LineWidth', 2, 'DisplayName', '终点');
 
     title(ax, '双基地雷达航迹综合对比');
-    legend(ax, 'Location', 'northeast');
 
-    % ---- 右侧控制面板 ----
-    panel = uipanel('Units', 'normalized', 'Position', [0.77, 0.05, 0.21, 0.92], ...
-        'Title', '图层显隐控制', 'FontSize', 11);
-
+    % ---- 右侧图层控制面板 ----
     handles = {h1, h2, h3, h4, h5, h6, h7};
     labels = {'真实航迹', 'R1 原始点迹(校准前)', 'R2 原始点迹(校准前)', ...
               'R1 校准后点迹', 'R2 校准后点迹', 'R1 UKF滤波', 'R2 UKF滤波'};
 
     for i = 1:7
-        ypos = 0.90 - (i-1) * 0.12;
-        uicontrol('Parent', panel, 'Style', 'checkbox', ...
+        ypos = 0.92 - (i-1) * 0.09;
+        uicontrol('Parent', fig, 'Style', 'checkbox', ...
             'String', labels{i}, 'Value', 1, ...
-            'Units', 'normalized', 'Position', [0.1, ypos, 0.8, 0.10], ...
-            'FontSize', 9, ...
-            'Callback', @(src, ~) set(handles{i}, 'Visible', ...
-                bool_to_vis(src.Value)));
+            'Units', 'normalized', 'Position', [0.76, ypos, 0.22, 0.06], ...
+            'FontSize', 10, 'BackgroundColor', [1 1 1], ...
+            'Callback', @(src, ~) try_set_visible(handles{i}, src.Value));
     end
 
-    % 统计信息文本框
+    % 统计信息
     n1 = length(assc1_lat); n2 = length(assc2_lat);
     n1c = sum_assc_clutter(trackState_R1);
     n2c = sum_assc_clutter(trackState_R2);
     nr1 = length(raw1_lat); nr2 = length(raw2_lat);
-    uicontrol('Parent', panel, 'Style', 'text', ...
-        'Units', 'normalized', 'Position', [0.03, 0.01, 0.94, 0.08], ...
+    uicontrol('Parent', fig, 'Style', 'text', ...
+        'Units', 'normalized', 'Position', [0.76, 0.01, 0.22, 0.06], ...
         'String', sprintf('R1关联:%d(虚警%d) R2关联:%d(虚警%d)\n原始点迹 R1:%d R2:%d  Pd=%.0f%% Pfa=%.3f', ...
         n1, n1c, n2, n2c, nr1, nr2, params.detection_probability*100, params.false_alarm_rate), ...
-        'FontSize', 8, 'HorizontalAlignment', 'left');
+        'FontSize', 8, 'BackgroundColor', [1 1 1]);
 
-    saveas(fig, fullfile(out_dir, 'fig3_combined_tracks.png'));
+    drawnow;
+    try
+        exportgraphics(fig, fullfile(out_dir, 'fig3_combined_tracks.png'), 'Resolution', 200);
+    catch
+        saveas(fig, fullfile(out_dir, 'fig3_combined_tracks.png'));
+    end
     fprintf('  综合航迹图已保存: fig3_combined_tracks.png\n');
 end
 
-function vis = bool_to_vis(val)
-    if val, vis = 'on'; else, vis = 'off'; end
+function try_set_visible(h, val)
+    try
+        if val, v = 'on'; else, v = 'off'; end
+        set(h, 'Visible', v);
+    catch
+    end
 end
 
 % ---- 从trackState提取校准后关联点迹位置 ----

@@ -4,7 +4,7 @@
 % =========================================================================
 
 function plot_point_cloud_3d(detList, title_str, out_path)
-    figure('Position', [100, 100, 900, 700]);
+    fig = figure('Position', [100, 100, 900, 700]);
     hold on;
 
     range_tgt = []; az_tgt = []; frame_tgt = [];
@@ -47,6 +47,11 @@ function plot_point_cloud_3d(detList, title_str, out_path)
     view(45, 30);
 
     rotate3d on;
-    saveas(gcf, out_path);
+    drawnow;
+    try
+        exportgraphics(fig, out_path, 'Resolution', 200);
+    catch
+        saveas(fig, out_path);
+    end
     fprintf('  点迹图已保存: %s\n', out_path);
 end
