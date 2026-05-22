@@ -10,7 +10,7 @@ function plot_single_fusion_result(true_track, trackSnapshots_R1, trackSnapshots
     frame_times = (0:length(trackSnapshots_R1)-1) * params.dt_sec;
 
     %% ===== Figure 1: 地图叠加 =====
-    fig1 = figure('Position', [50, 50, 1400, 850]);
+    fig1 = figure('Position', [50, 50, 1400, 750]);
     try
         ax = geoaxes('Units', 'normalized', 'Position', [0.04, 0.10, 0.68, 0.88]);
         ax.Basemap = 'darkwater';
@@ -125,7 +125,7 @@ function plot_single_fusion_result(true_track, trackSnapshots_R1, trackSnapshots
     fprintf('  融合地图已保存: fig6_single_fusion_map.png\n');
 
     %% ===== Figure 2: 误差收敛曲线 =====
-    fig2 = figure('Position', [50, 50, 1400, 650]);
+    fig2 = figure('Position', [50, 50, 1400, 750]);
     win = 10;
 
     method_ls = {'-', '--', '-.', ':'};

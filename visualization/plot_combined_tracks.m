@@ -7,7 +7,7 @@
 function plot_combined_tracks(true_track, detList_R1, detList_R2, ...
         trackState_R1, trackState_R2, params, out_dir)
 
-    fig = figure('Position', [50, 50, 1400, 850]);
+    fig = figure('Position', [50, 50, 1400, 750]);
 
     % ---- 左侧地理图 ----
     try

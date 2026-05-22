@@ -6,7 +6,7 @@
 function plot_single_track_result(true_track, detList_R1, detList_R2, ...
         trackSnapshots_R1, trackSnapshots_R2, params, out_dir)
 
-    fig = figure('Position', [50, 50, 1400, 850]);
+    fig = figure('Position', [50, 50, 1400, 750]);
     try
         ax = geoaxes('Units', 'normalized', 'Position', [0.04, 0.10, 0.70, 0.88]);
         ax.Basemap = 'darkwater';

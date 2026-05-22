@@ -4,7 +4,7 @@
 % =========================================================================
 
 function plot_scene_overview(true_track, params, out_dir)
-    fig = figure('Position', [100, 100, 1200, 800]);
+    fig = figure('Position', [50, 50, 1400, 750]);
     try
         ax = geoaxes('Basemap', 'darkwater');
     catch

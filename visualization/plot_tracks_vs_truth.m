@@ -4,7 +4,7 @@
 % =========================================================================
 
 function plot_tracks_vs_truth(trackState_R1, trackState_R2, true_track, params, out_dir)
-    fig = figure('Position', [100, 100, 1400, 600]);
+    fig = figure('Position', [50, 50, 1400, 750]);
     tlo = tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 
     % ---- R1 ----
