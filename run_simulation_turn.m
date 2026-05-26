@@ -443,26 +443,26 @@ if ~exist('results', 'dir'), mkdir('results'); end
 
 warn_state = warning('off', 'all');
 
-% 图1: 场景总览 (拐弯航迹 + 双雷达覆盖)
-plot_scene_overview(true_track, params, 'results');
-
-% 图2: 点云 + 基础UKF(虚线) + 自适应UKF(实线) 并排 (R1左 R2右)
-plot_turn_point_clouds(true_track, detList_R1, detList_R2, ...
-    trackSnapshots_R1, trackSnapshots_R2, ...
-    trackSnapshots_R1_ad, trackSnapshots_R2_ad, params, 'results');
-
-% 图3: R1 单站对比 (地图+拐弯放大+误差时间线+RMSE柱状图)
-plot_turn_radar_compare(true_track, trackSnapshots_R1, trackSnapshots_R1_ad, ...
-    'R1', params.radar1_lat, params.radar1_lon, params, 'results', 3);
-
-% 图4: R2 单站对比 (地图+拐弯放大+误差时间线+RMSE柱状图)
-plot_turn_radar_compare(true_track, trackSnapshots_R2, trackSnapshots_R2_ad, ...
-    'R2', params.radar2_lat, params.radar2_lon, params, 'results', 4);
-
-% 图5: 融合地图对比 (基础融合虚线 + 自适应融合实线 + 拐弯放大 + 信息面板)
-plot_turn_fusion_map(true_track, ...
-    all_fused_snapshots, method_names, best_m_base, ...
-    all_fused_snapshots_ad, method_names, best_m_ad, params, 'results');
+% % 图1: 场景总览 (拐弯航迹 + 双雷达覆盖)
+% plot_scene_overview(true_track, params, 'results');
+% 
+% % 图2: 点云 + 基础UKF(虚线) + 自适应UKF(实线) 并排 (R1左 R2右)
+% plot_turn_point_clouds(true_track, detList_R1, detList_R2, ...
+%     trackSnapshots_R1, trackSnapshots_R2, ...
+%     trackSnapshots_R1_ad, trackSnapshots_R2_ad, params, 'results');
+% 
+% % 图3: R1 单站对比 (地图+拐弯放大+误差时间线+RMSE柱状图)
+% plot_turn_radar_compare(true_track, trackSnapshots_R1, trackSnapshots_R1_ad, ...
+%     'R1', params.radar1_lat, params.radar1_lon, params, 'results', 3);
+% 
+% % 图4: R2 单站对比 (地图+拐弯放大+误差时间线+RMSE柱状图)
+% plot_turn_radar_compare(true_track, trackSnapshots_R2, trackSnapshots_R2_ad, ...
+%     'R2', params.radar2_lat, params.radar2_lon, params, 'results', 4);
+% 
+% % 图5: 融合地图对比 (基础融合虚线 + 自适应融合实线 + 拐弯放大 + 信息面板)
+% plot_turn_fusion_map(true_track, ...
+%     all_fused_snapshots, method_names, best_m_base, ...
+%     all_fused_snapshots_ad, method_names, best_m_ad, params, 'results');
 
 % 图6: RMSE柱状图总览 (全部方法 基础灰 vs 自适应绿 + 数值汇总)
 plot_turn_rmse_bars(fusion_eval_base, fusion_eval_ad, ...
